@@ -323,7 +323,11 @@ def validate_reroute(
                                  evidence=evidence))
 
     # 1. Allow-listed operation.
-    op = action.action_type.value
+    # Read `.value` defensively: a loosely-constructed action can carry a bare
+    # string here. A safety gate must fail *closed*, never raise -- an
+    # exception escaping this function would skip the remaining checks.
+    raw_op = getattr(action, "action_type", None)
+    op = getattr(raw_op, "value", raw_op)
     check("operation_allowlisted", op in ALLOWED_OPERATIONS,
           f"operation '{op}' is {'allowed' if op in ALLOWED_OPERATIONS else 'not permitted'}",
           operation=op, allowlist=sorted(ALLOWED_OPERATIONS))
@@ -353,12 +357,22 @@ def validate_reroute(
           limit=policy.max_path_hops)
 
     # 5. Every link on the path exists and is up.
+    # Check *both* the static topology and the live link telemetry. The
+    # topology says how the network was built; only telemetry says whether a
+    # link is still carrying traffic. A path over a link that has since failed
+    # is exactly the kind of change this gate exists to prevent.
+    live_by_id = {l.link_id: l for l in snapshot.links}
     missing_links, down_links = [], []
     for a, b in zip(path, path[1:]):
         link = _link_between(topo, a, b)
         if link is None:
             missing_links.append(f"{a}-{b}")
-        elif link.status.value != "up":
+            continue
+        if link.status.value != "up":
+            down_links.append(f"{a}-{b}")
+            continue
+        live = live_by_id.get(link.id)
+        if live is not None and getattr(live.status, "value", live.status) != "up":
             down_links.append(f"{a}-{b}")
     links_ok = not missing_links and not down_links
     check("all_links_operational", links_ok,
