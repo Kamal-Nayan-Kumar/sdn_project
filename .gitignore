@@ -1,0 +1,71 @@
+# --- secrets / env ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# --- node ---
+node_modules/
+.next/
+out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.tsbuildinfo
+
+# --- editors / os ---
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- project runtime ---
+logs/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+/downloads
+
+# --- lab artifacts (never commit runtime network state) ---
+*.ovsschema
+*.ovsidb
+ovs.log
+
+# --- ryu source checkout (vendored, rebuilt via scripts/setup-ryu.sh) ---
+/network-lab/controller/ryu-src/
+
+# --- build artifacts (built via scripts/setup-mininet.sh) ---
+/network-lab/bin/mnexec
+
+# --- vendored third-party (cloned separately) ---
+/network-lab/mininet/
+
+# --- reports / exports ---
+*.pdf
+!docs/**/*.pdf
+report/

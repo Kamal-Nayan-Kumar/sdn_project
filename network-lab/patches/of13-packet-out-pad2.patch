@@ -1,0 +1,86 @@
+Fix OF 1.3 OFPPacketOut._serialize_body: write the missing pad2 and stop
+corrupting the forwarded payload.
+
+Upstream writes the action list at OFP_PACKET_OUT_SIZE into `self.buf`, which
+is still the bare 8-byte header bytearray at that point, and then appends the
+payload with `self.buf += self.data` -- which shifts the action bytes.
+
+Separately, OF 1.3 defines ofp_packet_out as
+
+    buffer_id(4) in_port(4) actions_len(2) pad(6) actions pad2(2) data
+
+and upstream never writes pad2, so the payload begins two bytes too early.
+Every spec-correct switch therefore drops the last two bytes of each forwarded
+frame, silently truncating ARP and IP payloads. Ryu is internally inconsistent
+here: OFPPacketIn.parser does skip the matching two bytes.
+
+The payload is deliberately not padded out to an 8-byte boundary even though
+the spec says it "should" be. ofp_packet_out carries no length field for the
+payload, so a receiver cannot distinguish padding from data -- padding a
+42-byte ARP frame to 48 makes the switch transmit a 46-byte frame that the
+receiving host discards. ofp_packet_in does carry total_len, so the switch pads
+there and the controller trims using it.
+
+See network-lab/README-ryu-patches.md.
+
+diff --git a/ryu/ofproto/ofproto_v1_3_parser.py b/ryu/ofproto/ofproto_v1_3_parser.py
+index 34c49a3..4e047a0 100644
+--- a/ryu/ofproto/ofproto_v1_3_parser.py
++++ b/ryu/ofproto/ofproto_v1_3_parser.py
+@@ -2596,24 +2596,45 @@ class OFPPacketOut(MsgBase):
+         self.data = data
+ 
+     def _serialize_body(self):
++        # Local patch (see network-lab/README-ryu-patches.md): the upstream
++        # OF 1.3 body is missing the 2-byte pad between the action list and
++        # the payload, and the payload is never aligned to 8 bytes. Together
++        # they make every spec-correct switch (OVS, our of13switch) mis-parse
++        # the frame -- and Ryu's own OFPPacketIn parser *does* expect the pad,
++        # so upstream is internally inconsistent.
+         self.actions_len = 0
+-        offset = ofproto.OFP_PACKET_OUT_SIZE
+-        for a in self.actions:
+-            a.serialize(self.buf, offset)
+-            offset += a.len
+-            self.actions_len += a.len
+-
++        actions_total = sum(a.len for a in self.actions)
++        payload = b''
+         if self.data is not None:
+             assert self.buffer_id == 0xffffffff
+             if isinstance(self.data, packet.Packet):
+                 self.data.serialize()
+-                self.buf += self.data.data
++                payload = self.data.data
+             else:
+-                self.buf += self.data
++                payload = bytes(self.data)
++            # pad2 before the payload (required by the OF 1.3 struct).
++            #
++            # The payload itself is deliberately NOT padded out to an 8-byte
++            # boundary. The spec only says it "should" be, and a receiver has
++            # no length field to distinguish padding from payload: padding a
++            # 42-byte ARP frame to 48 makes the switch transmit a 46-byte
++            # frame and the receiving host drops it.
++            payload = b'\x00\x00' + payload
+ 
+-        msg_pack_into(ofproto.OFP_PACKET_OUT_PACK_STR,
+-                      self.buf, ofproto.OFP_HEADER_SIZE,
+-                      self.buffer_id, self.in_port, self.actions_len)
++        buf = bytearray(ofproto.OFP_PACKET_OUT_SIZE + actions_total + len(payload))
++        offset = ofproto.OFP_PACKET_OUT_SIZE
++        for a in self.actions:
++            a.serialize(buf, offset)
++            offset += a.len
++            self.actions_len += a.len
++
++        msg_pack_into(ofproto.OFP_PACKET_OUT_PACK_STR, buf,
++                      ofproto.OFP_HEADER_SIZE, self.buffer_id, self.in_port,
++                      self.actions_len)
++        if payload:
++            buf[ofproto.OFP_PACKET_OUT_SIZE + actions_total:] = payload
++
++        self.buf = buf
+ 
+     @classmethod
+     def from_jsondict(cls, dict_, decode_string=base64.b64decode,

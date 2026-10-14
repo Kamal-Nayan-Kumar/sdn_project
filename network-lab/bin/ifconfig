@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+#
+# ifconfig(8) compatibility shim for the rootless Mininet lab.
+#
+# The Mininet release this project uses configures interfaces exclusively
+# through `ifconfig`. This machine (Omarchy / Arch) ships `ip` from iproute2
+# and does not have the legacy net-tools package installed, so this shim
+# translates the handful of ifconfig invocations Mininet actually makes into
+# `ip` calls.
+#
+# Supported forms (these are the only ones Mininet emits):
+#
+#   ifconfig <iface> <ip>[/prefix]  [up|down]
+#   ifconfig <iface> hw ether <mac> [up|down]
+#   ifconfig <iface> up|down          (no address at all)
+#   ifconfig <iface>                  (report; printed in ifconfig style)
+#
+# Anything else prints an error and exits non-zero rather than silently doing
+# nothing, so a real failure cannot be mistaken for success.
+#
+# Deliberately bash: no interpreter startup cost, and it is invoked once per
+# interface while the topology is being built.
+
+set -u
+
+PROG=${0##*/}
+
+warn() { printf '%s: %s\n' "$PROG" "$*" >&2; }
+
+# ---------------------------------------------------------------------------
+# report mode
+# ---------------------------------------------------------------------------
+# Mimic the parts of `ifconfig <iface>` output that Mininet regex-parses:
+#   _ipMatchRegex  -> first  \d+\.\d+\.\d+\.\d+
+#   _macMatchRegex -> first  ..:..:..:..:..:..
+report_iface() {
+  iface=$1
+  if ! ip -o link show dev "$iface" >/dev/null 2>&1; then
+    warn "device $iface does not exist"
+    exit 1
+  fi
+
+  mac=$(ip -o link show dev "$iface" 2>/dev/null |
+        sed -n 's/.*link\/ether \([0-9a-fA-F:]\{17\}\).*/\1/p')
+  [ -n "$mac" ] || mac="00:00:00:00:00:00"
+
+  addr=$(ip -o -4 addr show dev "$iface" 2>/dev/null |
+         sed -n 's/.*inet \([0-9.]\+\).*/\1/p' | head -n 1)
+  prefix=$(ip -o -4 addr show dev "$iface" 2>/dev/null |
+           sed -n 's#.*inet [0-9.]\+/\([0-9]\+\).*#\1#p' | head -n 1)
+  bcast=$(ip -o -4 addr show dev "$iface" 2>/dev/null |
+          sed -n 's/.*brd \([0-9.]\+\).*/\1/p' | head -n 1)
+
+  # Dotted netmask from the prefix length, for authentic-looking output.
+  mask=""
+  if [ -n "${prefix:-}" ]; then
+    full=0; i=0
+    while [ $i -lt "$prefix" ]; do
+      full=$(( full | (1 << (31 - i)) )); i=$(( i + 1 ))
+    done
+    mask=$(( (full >> 24) & 255 )).$(( (full >> 16) & 255 )).$(( (full >> 8) & 255 )).$(( full & 255 ))
+  fi
+
+  state=$(ip -o link show dev "$iface" 2>/dev/null | sed -n 's/.*<\([^>]*\)>.*/\1/p')
+
+  printf '%s: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500\n' "$iface"
+  [ -n "${state:-}" ] && printf '        state %s\n' "$state"
+  [ -n "${addr:-}" ] && printf '        inet %s  netmask %s  broadcast %s\n' \
+      "$addr" "${mask:-255.255.255.0}" "${bcast:-0.0.0.0}"
+  printf '        ether %s  txqueuelen 1000  (Ethernet)\n' "$mac"
+  exit 0
+}
+
+# ---------------------------------------------------------------------------
+# argument dispatch
+# ---------------------------------------------------------------------------
+[ $# -eq 0 ] && { warn "usage: $PROG <iface> [...]"; exit 1; }
+
+iface=$1; shift
+
+# "hw ether <mac>"
+if [ "${1:-}" = "hw" ] && [ "${2:-}" = "ether" ]; then
+  mac=$3; shift 3
+  ip link set dev "$iface" address "$mac" || exit 1
+  [ "${1:-}" = "up" ] && { ip link set dev "$iface" up; shift; }
+  exit 0
+fi
+
+# bare "ifconfig <iface>" -> report
+if [ $# -eq 0 ]; then
+  report_iface "$iface"
+fi
+
+# "ifconfig <iface> up" / "ifconfig <iface> down": no address at all.
+# Mininet emits exactly this form while bringing an interface up, so this
+# must be matched BEFORE we try to interpret the token as an address.
+case $1 in
+  up|down)
+    ip link set dev "$iface" "$1"
+    shift
+    [ $# -eq 0 ] && exit 0
+    ;;
+esac
+
+# First real token is now an address spec.
+if [ $# -eq 0 ]; then exit 0; fi
+addr=$1; shift
+
+# Legacy "netmask" form:  ifconfig <iface> <ip> netmask <mask> [up]
+if [ "${1:-}" = "netmask" ]; then
+  shift
+  netmask=$1; shift
+  bits=0; i=0
+  for octet in $(printf '%s' "$netmask" | tr '.' ' '); do
+    while [ $i -lt 8 ]; do
+      if [ $(( (octet >> (7 - i)) & 1 )) -eq 1 ]; then bits=$(( bits + 1 )); fi
+      i=$(( i + 1 ))
+    done
+    i=0
+  done
+  addr="$addr/$bits"
+elif printf '%s\n' "$addr" | grep -q '^[0-9][0-9.]*/[0-9][0-9]*$'; then
+  : # already CIDR
+else
+  mask=""
+  case "${1:-}" in
+    up|down|'') ;;
+    *) mask=$1; shift ;;   # legacy "address prefix" style
+  esac
+  addr="$addr/${mask:-24}"
+fi
+
+# Remaining tokens are state verbs only.
+while [ $# -gt 0 ]; do
+  case $1 in
+    up)   ip link set dev "$iface" up ;;
+    down) ip link set dev "$iface" down ;;
+    *) warn "unsupported argument: $1"; exit 2 ;;
+  esac
+  shift
+done
+
+# Install the address. Flush first so a re-run is idempotent.
+ip addr flush dev "$iface" 2>/dev/null || true
+ip addr add "$addr" dev "$iface" 2>/dev/null || {
+  warn "failed to add $addr to $iface"
+  exit 1
+}
+
+exit 0
