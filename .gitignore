@@ -49,6 +49,10 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+# Local SQLite databases written next to the working tree. The default
+# DATABASE_URL points at ./sdn_dev.db.
+*.db
+sdn_dev.db
 /downloads
 
 # --- lab artifacts (never commit runtime network state) ---

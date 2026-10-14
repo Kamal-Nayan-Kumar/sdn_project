@@ -386,9 +386,18 @@ def diagnose_and_plan(state: st.AgentState,
 
     if paths_result.ok:
         raw_candidates = paths_result.outputs.get("candidates", [])
+        current = list((state.get("baseline") and
+                       state["baseline"].path) or [])
         for cand in raw_candidates:
             nodes = cand.get("nodes") or []
             if len(nodes) < 3:
+                continue
+            # A candidate identical to the path the flow is already taking is a
+            # no-op. Installing it changes nothing, then the post-action
+            # measurement comes back the same and the run reports a failure
+            # that the action could not possibly have prevented.
+            if current and _same_path(nodes, current):
+                notes.append("skipped a candidate equal to the current path")
                 continue
             candidates.append(RerouteAction(
                 flow_id=_flow_id_for(intent),
@@ -399,7 +408,7 @@ def diagnose_and_plan(state: st.AgentState,
             ))
         notes.append(
             f"Evaluated {len(raw_candidates)} candidate paths; "
-            f"{len(candidates)} are structurally usable.")
+            f"{len(candidates)} are usable and differ from the current path.")
     else:
         notes.append(f"path evaluation failed: {paths_result.error}")
 
@@ -440,6 +449,22 @@ def diagnose_and_plan(state: st.AgentState,
         "diagnosis_summary": summary,
         "planning_notes": notes,
     }
+
+
+def _same_path(a: list[str], b: list[str]) -> bool:
+    """Do two node paths traverse the same network edges?
+
+    Compared over the switch subsequence, because the lab reports a flow's
+    current path as switches only while a candidate path includes its host
+    endpoints. Comparing host endpoints too would make every pair look
+    different, so a candidate identical to the live path would slip through.
+    """
+    return _switch_edges(a) == _switch_edges(b)
+
+
+def _switch_edges(path: list[str]) -> list[str]:
+    hops = [n for n in path if not n.startswith("h")] or list(path)
+    return [f"{min(x, y)}-{max(x, y)}" for x, y in zip(hops, hops[1:])]
 
 
 def _flow_id_for(intent: IntentSpec) -> str:
