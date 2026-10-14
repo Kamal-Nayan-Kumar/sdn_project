@@ -18,6 +18,7 @@ work -- but it never claims LLM reasoning happened.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -32,6 +33,8 @@ from app.safety.gates import (
     verify_recovery,
 )
 from app.schemas.domain import (
+    ActionType,
+    ExecutionResult,
     FlowKind,
     FlowTelemetry,
     IntentSpec,
@@ -146,19 +149,18 @@ def intent_detection(state: st.AgentState) -> st.AgentState:
             notes.append("intent parsed by " + settings.groq_model)
         except LLMUnavailable as exc:
             llm_error = str(exc)
+            intent = parse_intent_deterministically(message, intent)
             notes.append(f"LLM unavailable ({exc}); used deterministic intent "
                          "parsing")
         except Exception as exc:  # malformed model output
             llm_error = f"malformed LLM output: {exc}"
+            intent = parse_intent_deterministically(message, intent)
             notes.append("LLM output failed schema validation; used "
                          "deterministic intent parsing")
     else:
-        notes.append("GROQ_API_KEY not configured; using deterministic intent "
+        intent = parse_intent_deterministically(message, intent)
+        notes.append("GROQ_API_KEY not configured; used deterministic intent "
                      "parsing")
-
-    lower = message.lower()
-    if "voice" in lower and "protect" in lower.lower():
-        pass  # protected flows come from the intent record, not the message
 
     needs_clarification = not (intent.src_host and intent.dst_host
                               and intent.max_latency_ms)
@@ -188,6 +190,55 @@ def _default_intent() -> IntentSpec:
         max_latency_ms=50.0,
         protected_flows=[],
     )
+
+
+# Deterministic parsing of the free-text ask. Used only when the LLM is
+# unavailable or unusable, so the system still honours an explicitly stated
+# target instead of silently substituting the default 50 ms.
+_HOST_RE = re.compile(r"\b(h[1-9]\d*)\b", re.IGNORECASE)
+_LATENCY_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(?:ms|msec|milliseconds?)\b", re.IGNORECASE)
+_KIND_RE = re.compile(r"\b(video|voice|web)\b", re.IGNORECASE)
+
+
+def parse_intent_deterministically(message: str,
+                                   base: IntentSpec | None = None) -> IntentSpec:
+    """Extract an intent from free text without a model.
+
+    Only *stated* facts are used: an endpoint pair, a latency figure, a traffic
+    class. Anything absent keeps the default rather than being invented, which
+    is the same rule the LLM prompt enforces.
+    """
+    intent = base.model_copy(deep=True) if base else _default_intent()
+    updates: dict[str, Any] = {}
+
+    hosts = _HOST_RE.findall(message or "")
+    if len(hosts) >= 2:
+        updates["src_host"] = hosts[0].lower()
+        updates["dst_host"] = hosts[1].lower()
+    elif len(hosts) == 1:
+        # One endpoint named: adopt it, leaving the other at its default.
+        named = hosts[0].lower()
+        if intent.src_host.lower() != named:
+            updates["dst_host"] = named
+        else:
+            updates["src_host"] = named
+
+    latency = _LATENCY_RE.search(message or "")
+    if latency:
+        try:
+            value = float(latency.group(1))
+        except ValueError:
+            value = 0.0
+        if value > 0:
+            updates["max_latency_ms"] = value
+
+    kind = _KIND_RE.search(message or "")
+    if kind:
+        updates["traffic_class"] = FlowKind(kind.group(1).lower())
+
+    # IntentSpec is frozen, so compose a new one rather than mutating.
+    return intent.model_copy(update=updates) if updates else intent
 
 
 # ---------------------------------------------------------------------------
@@ -261,14 +312,21 @@ def observe_network(state: st.AgentState,
 
 
 def assess_evidence_node(state: st.AgentState) -> st.AgentState:
-    """Gate 1: is the evidence present, fresh, and sufficient?"""
+    """Gate 1: is the evidence present, fresh, and sufficient?
+
+    Also records `intent_violated`, because "the intent is already met" and
+    "the evidence is inconclusive" must never be reported the same way: the
+    first is a confident no-op, the second is a refusal to act. Collapsing them
+    would make the agent look uncertain about a healthy network, or -- worse --
+    make a healthy network look like a case where the agent chose not to help.
+    """
     intent = state.get("intent") or _default_intent()
     snapshot = _snapshot_from(state)
 
     assessment = assess_evidence(
         snapshot=snapshot,
         intent=intent,
-        suspect_links=state.get("suspect_links"),
+        suspected_links=state.get("suspect_links"),
     )
 
     notes = list(state.get("planning_notes", []))
@@ -279,8 +337,23 @@ def assess_evidence_node(state: st.AgentState) -> st.AgentState:
         **state,
         "evidence": assessment,
         "evidence_status": assessment.status,
+        "intent_violated": _is_violated(state.get("baseline"), intent),
         "planning_notes": notes,
     }
+
+
+def _is_violated(flow: FlowTelemetry | None,
+                 intent: IntentSpec) -> bool | None:
+    """Does the measurement breach the intent?
+
+    Returns None when there is no usable measurement, so "unknown" never
+    silently becomes "not violated".
+    """
+    if flow is None or flow.latency_ms is None or flow.latency_ms < 0:
+        return None
+    if flow.packet_loss_pct and flow.packet_loss_pct > 0:
+        return True
+    return flow.latency_ms > intent.max_latency_ms
 
 
 # ---------------------------------------------------------------------------
@@ -495,9 +568,22 @@ def execute_action(state: st.AgentState,
                 "final_outcome": "lab_offline",
                 "explanation": f"Execution failed: {result.error}"}
 
+    # Build the typed result the verification gate reads. Storing the raw tool
+    # payload here would leave `status` absent, and Gate 3 would then report
+    # "the action did not execute" for a reroute that demonstrably did.
+    outputs = result.outputs or {}
+    controller = outputs.get("controller") or {}
+    execution = ExecutionResult(
+        action_id=state.get("action_id", ""),
+        action_type=ActionType.REROUTE_FLOW,
+        status="executed",
+        controller_response=outputs,
+        flow_rules_installed=int(controller.get("flow_rules_installed", 0) or 0),
+    )
+
     return {
         **state,
-        "execution": result.outputs,
+        "execution": execution,
         "awaiting_approval": False,
         "executed_path_ids": [action.path],
     }
@@ -560,8 +646,8 @@ def verify_and_explain(state: st.AgentState,
     protected_before = list(state.get("protected_baseline", []))
     protected_after = list(state.get("protected_after", []))
 
-    execution = state.get("execution") or {}
-    if execution.get("status") != "executed":
+    execution = state.get("execution")
+    if not isinstance(execution, ExecutionResult) or execution.status != "executed":
         return {
             **state,
             "verification": None,
@@ -571,11 +657,12 @@ def verify_and_explain(state: st.AgentState,
                             "to verify against the intent."),
         }
 
+    executed_path = list(execution.controller_response.get("path") or [])
     statuses = check_protected_flows(
         protected=intent.protected_flows,
         before=protected_before,
         after=protected_after,
-        path_by_flow={spec.flow_id: (execution.get("path") or [])
+        path_by_flow={spec.flow_id: executed_path
                       for spec in intent.protected_flows},
     )
 

@@ -89,6 +89,10 @@ class AgentState(TypedDict, total=False):
     evidence_status: EvidenceStatus | None
     suspect_links: list[str]
     evidence_retries: int
+    # Does the measurement actually breach the intent? None means "no usable
+    # measurement", which is deliberately distinct from False ("measured and
+    # within the intent").
+    intent_violated: bool | None
 
     # -- diagnosis / planning --------------------------------------------
     diagnosis_summary: str
@@ -158,6 +162,7 @@ def initial_state(**kwargs: Any) -> AgentState:
         "evidence_status": None,
         "suspect_links": [],
         "evidence_retries": 0,
+        "intent_violated": None,
         "diagnosis_summary": "",
         "planning_notes": [],
         "candidate_actions": [],

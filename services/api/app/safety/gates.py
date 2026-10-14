@@ -134,7 +134,9 @@ def assess_evidence(
     # --- 5/6. an identifiable suspect link that the topology agrees on ---
     suspects = list(suspected_links) if suspected_links is not None else []
     if flow is not None and not suspects:
-        suspects = _infer_bottleneck_links(snapshot, settings.congestion_utilization_threshold)
+        suspects = _infer_bottleneck_links(
+            snapshot, settings.congestion_utilization_threshold,
+            path=getattr(flow, "path", None) or None)
 
     if not suspects:
         missing.append("diagnosis:suspect_link")
@@ -212,13 +214,47 @@ def _sane_flow(flow: FlowTelemetry) -> bool:
     return True
 
 
-def _infer_bottleneck_links(snapshot: NetworkSnapshot,
-                            threshold: float) -> list[str]:
-    """Links at or above the congestion threshold, most-utilised first."""
+def _infer_bottleneck_links(snapshot: NetworkSnapshot, threshold: float,
+                            path: list[str] | None = None) -> list[str]:
+    """Name the links that could account for an intent violation.
+
+    Two cases, in order of directness:
+
+    1. **Congestion.** Links at or above the threshold, most-utilised first.
+       This is the strongest evidence: a link is carrying more than its share.
+    2. **Path delay.** If nothing is congested but the intent is still
+       breached, the excess latency has to be accruing somewhere on the flow's
+       current path. Naming those links (slowest first) is a real, checkable
+       diagnosis -- the reroute can then be judged against an alternative.
+
+    Returning nothing here is what makes the agent abstain, so the fallback has
+    to stay conservative: it only fires when the caller has already established
+    that a violation exists.
+    """
     level = threshold * 100.0
     congested = [l for l in snapshot.links if l.utilization_pct >= level]
-    congested.sort(key=lambda l: -l.utilization_pct)
-    return [l.link_id for l in congested]
+    if congested:
+        congested.sort(key=lambda l: -l.utilization_pct)
+        return [l.link_id for l in congested]
+
+    if not path:
+        return []
+
+    # A flow path is a sequence of node ids ("s1", "s2", "s4"); link ids are
+    # edges ("s1-s2"). Convert, and tolerate a path already given as links.
+    wanted = _links_along(path)
+    on_path = [l for l in snapshot.links if l.link_id in wanted]
+    # Delay-carrying first: that is where a reroute can actually help.
+    on_path.sort(key=lambda l: (-(l.latency_ms or 0.0), l.link_id))
+    return [l.link_id for l in on_path]
+
+
+def _links_along(path: list[str]) -> set[str]:
+    """Edge ids spanned by a node path, order-insensitive."""
+    edges: set[str] = set()
+    for a, b in zip(path, path[1:]):
+        edges.add("-".join(sorted((a, b))))
+    return edges
 
 
 def _confidence(*, present: int, fresh: int, total: int) -> float:

@@ -15,11 +15,10 @@ Security properties enforced here as well as server-side:
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import socket as _socket
-import urllib.error
-import urllib.request
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -29,6 +28,26 @@ from app.core.config import get_settings
 
 class LabUnavailable(RuntimeError):
     """Raised when the local network lab cannot be reached."""
+
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    """HTTP/1.1 over a unix domain socket.
+
+    `urllib` has no supported way to talk HTTP over an AF_UNIX socket -- the
+    usual trick of subclassing `AbstractHTTPHandler` does not work, because that
+    class defines no `http_open` and the handler is therefore never invoked.
+    Subclassing the connection is the supported route.
+    """
+
+    def __init__(self, socket_path: str, timeout: float = 30.0) -> None:
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = socket_path
+
+    def connect(self) -> None:  # noqa: D102 - http.client contract
+        sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect(self.socket_path)
+        self.sock = sock
 
 
 class LabBridgeClient:
@@ -41,43 +60,40 @@ class LabBridgeClient:
             "SDN_LAB_SOCKET", "/tmp/sdn-lab.sock")
         self.token = token or os.environ.get("LAB_API_TOKEN", "") or (
             settings.lab_bridge_token if settings.bridge_token_configured else "")
+        self.timeout = float(getattr(settings, "lab_bridge_timeout_seconds", 30.0))
 
     # ------------------------------------------------------------------
     # plumbing
     # ------------------------------------------------------------------
     def _request(self, method: str, path: str,
                  body: dict[str, Any] | None = None) -> Any:
-        url = f"http://localhost{path}"
-        data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(url, data=data, method=method)
-        if data:
-            req.add_header("Content-Type", "application/json")
+        payload = json.dumps(body).encode() if body is not None else None
+        headers = {"Accept": "application/json"}
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
         if self.token:
-            req.add_header("Authorization", f"Bearer {self.token}")
+            headers["Authorization"] = f"Bearer {self.token}"
 
-        class UnixHTTPConnection(urllib.request.AbstractHTTPHandler):
-            def __init__(self, socket_path: str) -> None:
-                self.socket_path = socket_path
-
-            def do_open(self, http_class, req, **http_conn_args):  # noqa: ANN001
-                conn = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-                conn.settimeout(30.0)
-                conn.connect(self.socket_path)
-                h = http_class(conn, timeout=30.0)
-                h.request(req.get_method(), req.selector, headers=req.headers)
-                return h
-
-        opener = urllib.request.build_opener(UnixHTTPConnection(self.socket_path))
+        conn = _UnixHTTPConnection(self.socket_path, timeout=self.timeout)
         try:
-            with opener.open(req, timeout=60.0) as resp:
-                return json.loads(resp.read().decode())
-        except (FileNotFoundError, ConnectionError, OSError) as exc:
+            conn.request(method, path, body=payload, headers=headers)
+            response = conn.getresponse()
+            raw = response.read().decode(errors="replace")
+        except (FileNotFoundError, ConnectionRefusedError, ConnectionError,
+                TimeoutError, OSError) as exc:
             raise LabUnavailable(
                 f"network lab not reachable at {self.socket_path}: {exc}") from exc
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")
+        finally:
+            conn.close()
+
+        if response.status >= 400:
             raise LabUnavailable(
-                f"network lab returned {exc.code} for {path}: {detail}") from exc
+                f"network lab returned {response.status} for {path}: {raw[:200]}")
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LabUnavailable(
+                f"network lab returned non-JSON for {path}: {raw[:200]}") from exc
 
     def get(self, path: str) -> Any:
         return self._request("GET", path)

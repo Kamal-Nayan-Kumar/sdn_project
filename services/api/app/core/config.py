@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     lab_mode: Literal["real", "mock"] = Field(default="real", alias="LAB_MODE")
     lab_bridge_url: str = Field(default="ws://127.0.0.1:8765", alias="LAB_BRIDGE_URL")
     lab_bridge_token: str = Field(default="", alias="LAB_BRIDGE_TOKEN")
+    lab_bridge_timeout_seconds: float = Field(
+        default=30.0, alias="LAB_BRIDGE_TIMEOUT_SECONDS"
+    )
 
     # --- Trustworthiness policy -------------------------------------------
     max_evidence_retries: int = Field(default=2, alias="MAX_EVIDENCE_RETRIES")

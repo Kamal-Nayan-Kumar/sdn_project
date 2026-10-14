@@ -451,11 +451,55 @@ class Lab:
         for link_id in snap["links"]:
             snap["links"][link_id]["status"] = "down" if link_id in congested else "up"
         snap["congested_links"] = congested
+        # Annotate each measured flow with the path the controller currently has
+        # installed. Without it a consumer cannot tell *where* the latency
+        # accrues, and any "which link should I reroute away from" reasoning
+        # has nothing to work from.
+        for key, flow in snap.get("flows", {}).items():
+            if isinstance(flow, dict):
+                flow["path"] = self.current_path(key)
         snap["switch_backend"] = self.switch_backend
         snap["active_scenario"] = "congestion" if congested else None
         snap["controller_reachable"] = self._connected_switches() > 0
         self.last_snapshot = snap
         return snap
+
+    def current_path(self, flow_key: str) -> list[str]:
+        """Switch path currently pinned for `flow_key` ("h1->h4").
+
+        Prefers the controller's explicit override (an installed reroute);
+        otherwise reports the lowest-delay path, which is what a learning
+        switch converges on once ARP has settled.
+        """
+        src, _, dst = flow_key.partition("->")
+        src_ip = str(TOPO.HOST_ATTACH.get(src, {}).get("ip", "")).split("/")[0]
+        dst_ip = str(TOPO.HOST_ATTACH.get(dst, {}).get("ip", "")).split("/")[0]
+        if not src_ip or not dst_ip:
+            return []
+
+        pinned = self._ryu_flow_path(src_ip, dst_ip)
+        if pinned:
+            return pinned
+
+        paths = TOPO.all_switch_paths(str(TOPO.HOST_ATTACH[src]["switch"]),
+                                       str(TOPO.HOST_ATTACH[dst]["switch"]))
+        best = min(paths, key=lambda p: sum(
+            float(TOPO.SWITCH_LINKS["-".join(sorted((a, b)))]["delay_ms"])
+            for a, b in zip(p, p[1:])), default=[])
+        return list(best)
+
+    def _ryu_flow_path(self, src_ip: str, dst_ip: str) -> list[str]:
+        """Ask the controller for an installed override, if there is one."""
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(
+                    "http://127.0.0.1:8080/v1/flow-overrides", timeout=3.0) as resp:
+                payload = json.loads(resp.read().decode())
+        except Exception:
+            return []
+        entry = payload.get("overrides", {}).get(f"{src_ip}->{dst_ip}")
+        return list(entry.get("path", [])) if entry else []
 
     def topology(self) -> dict[str, Any]:
         nodes = []
@@ -472,6 +516,17 @@ class Lab:
                           "capacity_mbps": spec["capacity_mbps"],
                           "delay_ms": spec["delay_ms"],
                           "status": "up", "congestible": spec["congestible"]})
+        # Host<->switch edges too. An end-to-end path spans them, so omitting
+        # them makes every host-to-host path look like it references links the
+        # topology does not contain -- which is exactly what the safety
+        # validator checks, and it would reject every candidate for that reason.
+        for host, spec in TOPO.HOST_ATTACH.items():
+            sw = str(spec["switch"])
+            link_id = "-".join(sorted((host, sw)))
+            links.append({"id": link_id, "source": host, "target": sw,
+                          "capacity_mbps": 1000.0, "delay_ms": 0.1,
+                          "status": "up", "congestible": False,
+                          "kind": "access"})
         return {"nodes": nodes, "links": links,
                 "controller": "ryu (OpenFlow 1.3)",
                 "switch_backend": self.switch_backend,

@@ -190,6 +190,32 @@ def _elapsed(started: float) -> float:
     return round((time.monotonic() - started) * 1000, 2)
 
 
+def _pick(source: dict[str, Any], model: type[BaseModel],
+          **defaults: Any) -> dict[str, Any]:
+    """Keep only the keys `model` declares, applying `defaults` for the rest."""
+    allowed = set(model.model_fields)
+    out = {k: v for k, v in source.items() if k in allowed}
+    for key, value in defaults.items():
+        out.setdefault(key, value)
+    return out
+
+
+def _links_of(snapshot_raw: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalise a snapshot's links to a list of dicts.
+
+    The lab serves `links` as an object keyed by `link_id`, while
+    `/v1/topology` serves them as a list. Callers here want a flat iterable, and
+    silently iterating the dict would yield its keys -- which fails much later
+    with a confusing "string indices must be integers" error. Normalising once,
+    here, keeps that mistake impossible.
+    """
+    links = snapshot_raw.get("links", [])
+    if isinstance(links, dict):
+        return [dict(value, link_id=key) for key, value in links.items()
+                if isinstance(value, dict)]
+    return [l for l in links if isinstance(l, dict)]
+
+
 # -- read-only implementations ---------------------------------------------
 
 
@@ -224,9 +250,13 @@ def _get_network_snapshot(p: GetNetworkSnapshotInput,
     raw = client.snapshot()
     topo_raw = client.topology()
 
-    nodes = [TopologyNode(**{**n, "kind": n.get("kind", "host")})
+    # Project onto the declared schema rather than splatting the lab's payload
+    # into it: the lab serves extra descriptive fields (`role`, `label`) and the
+    # domain models forbid extras on purpose, so the contract stays the schema
+    # and the lab stays free to add presentation data.
+    nodes = [TopologyNode(**_pick(n, TopologyNode, kind=n.get("kind", "host")))
              for n in topo_raw.get("nodes", [])]
-    links = [TopologyLink(**{**l, "status": l.get("status", "up")})
+    links = [TopologyLink(**_pick(l, TopologyLink, status=l.get("status", "up")))
              for l in topo_raw.get("links", [])]
     topology = Topology(nodes=nodes, links=links,
                        controller=topo_raw.get("controller"))
@@ -240,7 +270,7 @@ def _get_network_snapshot(p: GetNetworkSnapshotInput,
             measured_at=datetime.fromtimestamp(
                 raw.get("measured_at", 0), tz=timezone.utc) if raw.get("measured_at") else _now(),
         )
-        for l in raw.get("links", [])
+        for l in _links_of(raw)
     ]
 
     flows: list[FlowTelemetry] = []
@@ -273,8 +303,8 @@ def _evaluate_paths(p: EvaluatePathsInput,
                     client: LabBridgeClient) -> dict[str, Any]:
     raw_paths = client.candidate_paths(p.src_host, p.dst_host)
     snap_raw = client.snapshot()
-    util = {l["link_id"]: float(l.get("utilization_pct", 0.0))
-            for l in snap_raw.get("links", [])}
+    snap_links = _links_of(snap_raw)
+    util = {l["link_id"]: float(l.get("utilization_pct", 0.0)) for l in snap_links}
     congested = set(snap_raw.get("congested_links", []))
     avoid = set(p.avoid_links) | congested
 
@@ -282,8 +312,7 @@ def _evaluate_paths(p: EvaluatePathsInput,
     for rp in raw_paths:
         link_ids = rp.get("links", [])
         links = [l for l in link_ids if l not in avoid]
-        delays = {l["link_id"]: float(l.get("delay_ms", 0.0))
-                  for l in snap_raw.get("links", [])}
+        delays = {l["link_id"]: float(l.get("delay_ms", 0.0)) for l in snap_links}
         total_delay = sum(delays.get(l, 0.0) for l in links)
         max_util = max((util.get(l, 0.0) for l in link_ids), default=0.0)
         candidates.append(PathCandidate(

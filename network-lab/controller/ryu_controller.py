@@ -429,6 +429,20 @@ class IntentRestController(ControllerBase):
                      for dpid, ports in self.app.port_stats.items()}
         return self._json({"switches": stats, "captured_at": time.time()})
 
+    @route("sdn", "/v1/flow-overrides", methods=["GET"])
+    def flow_overrides(self, req, **kwargs):
+        """Currently installed per-flow path overrides.
+
+        Lets the lab report which path a flow is *actually* taking, so latency
+        can be attributed to links rather than merely observed.
+        """
+        with STATE_LOCK:
+            overrides = {
+                f"{src}->{dst}": {"src_ip": src, "dst_ip": dst, "path": list(path)}
+                for (src, dst), path in FLOW_OVERRIDES.items()
+            }
+        return self._json({"overrides": overrides, "captured_at": time.time()})
+
     @route("sdn", "/v1/topology", methods=["GET"])
     def topology(self, req, **kwargs):
         nodes = [{"id": h, "kind": "host", "ip": HOST_IPS.get(h)}

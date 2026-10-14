@@ -25,8 +25,8 @@ from typing import Any, Callable
 
 from langgraph.graph import END, StateGraph
 
-from app.agents import nodes.workflow as wf
 from app.agents import state as st
+from app.agents import workflow as wf
 from app.services.lab_bridge import LabBridgeClient
 
 LOG = logging.getLogger(__name__)
@@ -35,11 +35,20 @@ Node = Callable[[st.AgentState], st.AgentState]
 
 
 def _evidence_route(state: st.AgentState) -> str:
-    """Gate 1: stop unless the evidence assessment is strong enough."""
+    """Gate 1: three outcomes, never conflated.
+
+    * `diagnose`   -- the intent is breached *and* the evidence supports acting.
+    * `satisfied`  -- the intent was measured and already met. A confident
+      no-op, reported as such rather than as a failure to act.
+    * `abstain`    -- the measurement is missing, stale or inconclusive. A
+      refusal to act, which must not be reported as success.
+    """
+    violated = state.get("intent_violated")
+    if violated is False:
+        return "satisfied"
+
     status = state.get("evidence_status")
-    if status is None:
-        return "diagnose"
-    if status.value in ("sufficient", "provisional"):
+    if status is not None and status.value in ("sufficient", "provisional"):
         return "diagnose"
     return "abstain"
 
@@ -72,6 +81,7 @@ def build_graph(client: LabBridgeClient):
     graph.add_node("observe_after", _bind(wf.observe_after, client))
     graph.add_node("verify", _bind(wf.verify_and_explain, client))
     graph.add_node("abstain", _abstain)
+    graph.add_node("satisfied", _satisfied)
     graph.add_node("stop", _terminal)
     graph.add_node("hold", _hold)
     graph.add_node("finish", _terminal)
@@ -87,7 +97,7 @@ def build_graph(client: LabBridgeClient):
     graph.add_conditional_edges(
         "evidence",
         _evidence_route,
-        {"diagnose": "diagnose", "abstain": "abstain"},
+        {"diagnose": "diagnose", "satisfied": "satisfied", "abstain": "abstain"},
     )
     graph.add_edge("diagnose", "validate")
     graph.add_conditional_edges(
@@ -99,6 +109,7 @@ def build_graph(client: LabBridgeClient):
     graph.add_edge("observe_after", "verify")
     graph.add_edge("verify", "finish")
     graph.add_edge("abstain", "stop")
+    graph.add_edge("satisfied", "stop")
     graph.add_edge("stop", END)
     graph.add_edge("hold", END)
     graph.add_edge("finish", END)
@@ -136,6 +147,23 @@ def _abstain(state: st.AgentState) -> st.AgentState:
             "The available telemetry does not establish that the intent is "
             f"being violated ({reason}), so the agent did not propose any "
             "network change."),
+    }
+
+
+def _satisfied(state: st.AgentState) -> st.AgentState:
+    """Nothing to heal: the measurement already meets the intent.
+
+    Reported distinctly from `abstained_insufficient_evidence` so the audit
+    trail never suggests uncertainty that the telemetry did not contain.
+    """
+    intent = state.get("intent") or wf._default_intent()
+    target = intent.max_latency_ms
+    return {
+        **state,
+        "final_outcome": "intent_satisfied",
+        "explanation": (
+            f"The measured latency of {wf._lat(state, intent)} already meets "
+            f"the {target:.0f} ms intent, so no network change was proposed."),
     }
 
 
