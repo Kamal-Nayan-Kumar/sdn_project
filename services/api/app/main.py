@@ -24,6 +24,8 @@ from typing import Any, AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes import lab as lab_routes
+from app.api.routes import runs as run_routes
 from app.core.config import get_settings
 from app.db.session import check_db_connection, init_engine
 from app.services.lab_bridge import LabBridgeClient, LabUnavailable
@@ -124,6 +126,9 @@ def create_app() -> FastAPI:
                     settings.congestion_utilization_threshold,
             },
         }
+
+    app.include_router(lab_routes.router)
+    app.include_router(run_routes.router)
 
     return app
 

@@ -43,7 +43,12 @@ export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPATH="${RYU_SRC}:${PROJECT_ROOT}:${PROJECT_ROOT}/network-lab:${PROJECT_ROOT}/network-lab/topologies:${PYTHONPATH:-}"
 
 # A shared local secret so the lab API can reject stray local callers.
-export LAB_API_TOKEN="${LAB_API_TOKEN:-$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')}"
+# If LAB_API_TOKEN is explicitly set to empty string, don't generate a random one
+if [ -z "${LAB_API_TOKEN+x}" ]; then
+  # Variable is not set at all - generate a random token
+  export LAB_API_TOKEN="$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')"
+fi
+# If LAB_API_TOKEN is set (even to empty string), use that value
 
 echo "==> SDN network lab"
 echo "    project : ${PROJECT_ROOT}"

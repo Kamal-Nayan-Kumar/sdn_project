@@ -58,8 +58,17 @@ class LabBridgeClient:
         settings = get_settings()
         self.socket_path = socket_path or os.environ.get(
             "SDN_LAB_SOCKET", "/tmp/sdn-lab.sock")
-        self.token = token or os.environ.get("LAB_API_TOKEN", "") or (
-            settings.lab_bridge_token if settings.bridge_token_configured else "")
+        # Prefer explicit token, then env var, then settings
+        # Only use settings token if it's actually configured (not a placeholder)
+        env_token = os.environ.get("LAB_API_TOKEN", "")
+        if token:
+            self.token = token
+        elif env_token:
+            self.token = env_token
+        elif settings.bridge_token_configured:
+            self.token = settings.lab_bridge_token
+        else:
+            self.token = ""  # No token configured - lab will be open
         self.timeout = float(getattr(settings, "lab_bridge_timeout_seconds", 30.0))
 
     # ------------------------------------------------------------------
@@ -71,8 +80,10 @@ class LabBridgeClient:
         headers = {"Accept": "application/json"}
         if payload is not None:
             headers["Content-Type"] = "application/json"
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
+        # Only send Authorization header if we have a non-empty token
+        # If token is empty, don't send the header at all (lab will allow open access)
+        if self.token and self.token.strip():
+            headers["Authorization"] = f"Bearer {self.token.strip()}"
 
         conn = _UnixHTTPConnection(self.socket_path, timeout=self.timeout)
         try:
