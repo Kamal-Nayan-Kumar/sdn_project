@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from app.services.lab_bridge import LabBridgeClient, LabUnavailable
-from app.tools import run_tool
+from app.tools import _links_of, run_tool
 
 pytestmark = pytest.mark.live
 
@@ -58,19 +58,33 @@ def test_snapshot_reads_as_a_domain_model(lab):
     assert snapshot.controller_reachable
 
 
-def test_every_reported_flow_carries_a_path(lab):
-    """Without a path the evidence gate cannot name a suspect link, and the
-    agent abstains rather than rerouting."""
-    python_module = __import__(
-        "app.tools", fromlist=["_links_of"])._links_of
+def test_every_reported_flow_path_resolves_to_real_links(lab):
+    """Without a resolvable path the evidence gate cannot name a suspect link,
+    and the agent abstains rather than rerouting.
+
+    The lab reports a flow's path as switches only, while a candidate path
+    includes its host endpoints -- both must resolve to edges the topology
+    knows about.
+    """
     raw = lab.get("/v1/snapshot")
-    links = python_module(raw)
-    ids = {l["link_id"] for l in links}
+    ids = {l["link_id"] for l in _links_of(raw)}
 
     for key, flow in raw["flows"].items():
         path = flow.get("path") or []
         assert path, f"{key} reports no path"
-        edges = [f"{a}-{b}" for a, b in zip(path, path[1:])]
-        assert set(edges) <= ids, (
+        edges = [f"{min(a, b)}-{max(a, b)}" for a, b in zip(path, path[1:])]
+        unknown = set(edges) - ids
+        assert not unknown, (
             f"{key} path references links the topology does not contain: "
-            f"{set(edges) - ids}")
+            f"{sorted(unknown)}")
+
+        # The path must contain at least one link the snapshot reports
+        # telemetry for, otherwise "where is the latency accruing" has no
+        # answer and the agent cannot justify a reroute.
+        switches = [n for n in path if not n.startswith("h")]
+        if len(switches) >= 2:
+            switch_edges = [f"{min(a, b)}-{max(a, b)}"
+                            for a, b in zip(switches, switches[1:])]
+            assert set(switch_edges) & ids, (
+                f"{key} path has no edge the snapshot reports on: "
+                f"{switch_edges}")
