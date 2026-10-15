@@ -168,8 +168,9 @@ class TelemetryCollector:
         try:
             out = host.cmd(f"ping -c {count} -W {timeout} -i {interval} {dst_ip}")
         except Exception as exc:
+            detail = str(exc).strip() or repr(exc)
             return FlowMeasurement(src_host, dst_host, ok=False,
-                                   error=f"ping failed: {exc}")
+                                   error=f"ping failed: {detail}")
         return parse_ping_output(out, src_host, dst_host)
 
     # -- link utilisation ---------------------------------------------------

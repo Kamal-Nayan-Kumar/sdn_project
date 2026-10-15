@@ -28,7 +28,7 @@ import type {
   SnapshotResponse,
   TopologyResponse,
 } from "./types";
-import { linksArray } from "./derive";
+import { linksArray, pathCandidates } from "./derive";
 
 /** Prefix for every call. Change it here if the rewrite target moves. */
 export const API_BASE = "/api";
@@ -206,10 +206,9 @@ export function getTopology(): Promise<TopologyResponse> {
  * `{candidates: [...]}`; `pathCandidates()` accepts either.
  */
 export function getPaths(src: string, dst: string): Promise<PathCandidate[]> {
-  return request<PathsResponse>("/v1/paths", { query: { src, dst } }).then((raw) => {
-    // Imported lazily to keep this module's import graph shallow.
-    return require_pathCandidates(raw);
-  });
+  return request<PathsResponse>("/v1/paths", { query: { src, dst } }).then((raw) =>
+    pathCandidates(raw),
+  );
 }
 
 /** `POST /v1/reroute` -- apply an already validated reroute. */
@@ -267,11 +266,3 @@ export function postConversationMessage(
     : "/conversations";
   return request<unknown>(path, { method: "POST", body: JSON.stringify(body) });
 }
-
-/** Named so the indirection above reads clearly at the call site. */
-function require_pathCandidates(raw: PathsResponse): PathCandidate[] {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  return pathCandidatesImpl(raw);
-}
-
-import { pathCandidates as pathCandidatesImpl } from "./derive";

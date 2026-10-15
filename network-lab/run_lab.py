@@ -450,13 +450,14 @@ class Lab:
             congested = list(self.congestion)
         for link_id in snap["links"]:
             snap["links"][link_id]["status"] = "down" if link_id in congested else "up"
-        snap["congested_links"] = congested
-        # Annotate each measured flow with the path the controller currently has
-        # installed. Without it a consumer cannot tell *where* the latency
-        # accrues, and any "which link should I reroute away from" reasoning
-        # has nothing to work from.
+        # Annotate each measured flow with flow_id, kind, and the path the controller
+        # currently has installed.
+        flow_id_map = {"h1->h4": "F1", "h3->h4": "F2", "h1->h3": "F3"}
         for key, flow in snap.get("flows", {}).items():
             if isinstance(flow, dict):
+                src, _, dst = key.partition("->")
+                flow["flow_id"] = flow_id_map.get(key, key)
+                flow["kind"] = "video" if key == "h1->h4" else ("voice" if "h3" in key else "other")
                 flow["path"] = self.current_path(key)
         snap["switch_backend"] = self.switch_backend
         snap["active_scenario"] = "congestion" if congested else None

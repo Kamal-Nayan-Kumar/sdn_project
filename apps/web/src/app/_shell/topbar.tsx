@@ -1,4 +1,5 @@
 "use client";
+import React from "react";
 
 import { IconReset, NetMindMark } from "./icons";
 import { useLabData } from "./lab-data";
@@ -36,68 +37,99 @@ const AGENT_COPY: Record<AgentRunStatus, { dot: string; label: string }> = {
  * agent B. Until then this is honestly "idle"; swap the value for the run
  * store from `@/lib` when it lands. Do not invent a running state.
  */
-const AGENT_STATUS: AgentRunStatus = "idle";
-
 export function Topbar() {
   const { connection, connectionDetail, scenario, labMode, resetLab, reset } = useLabData();
   const lab = CONNECTION_COPY[connection];
-  const agent = AGENT_COPY[AGENT_STATUS];
   const busy = reset.status === "running";
 
   return (
-    <header className="app-topbar">
-      <div className="flex items-center gap-2.5">
-        <NetMindMark />
-        <span className="flex flex-col leading-none">
-          <strong className="text-[15px] font-semibold tracking-[-0.01em]">NetMind</strong>
-          <span className="mt-[3px] text-[11.5px] text-[var(--ink-3)]">Agentic control for SDN</span>
-        </span>
+    <header className="app-topbar flex items-center justify-between px-4 py-2 border-b border-[var(--line)] bg-[var(--surface)]">
+      {/* Left: Brand Identity */}
+      <div className="flex items-center gap-3">
+        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--blue-soft)]">
+          <NetMindMark size={24} />
+        </div>
+        <div className="flex flex-col leading-tight">
+          <strong className="text-[15px] font-semibold text-[var(--ink)] tracking-tight">NetMind</strong>
+          <span className="text-[11px] text-[var(--ink-3)] font-medium">Agentic control for SDN</span>
+        </div>
       </div>
 
-      <span aria-hidden="true" className="ml-1 h-6 w-px bg-[var(--line)]" />
+      {/* Center: Global Search Input */}
+      <div className="relative mx-6 flex max-w-[480px] flex-1 items-center">
+        <span className="pointer-events-none absolute left-3 text-[var(--ink-4)]">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="11" cy="11" r="8" />
+            <path d="m21 21-4.35-4.35" />
+          </svg>
+        </span>
+        <input
+          type="text"
+          placeholder="Search conversations, flows, or devices..."
+          className="h-8 w-full rounded-md border border-[var(--line-strong)] bg-[var(--canvas)] pl-9 pr-14 text-[12px] text-[var(--ink)] placeholder:text-[var(--ink-4)] focus:border-[var(--brand)] focus:outline-none"
+        />
+        <kbd className="pointer-events-none absolute right-2.5 rounded border border-[var(--line)] bg-[var(--surface)] px-1.5 py-0.5 text-[10px] text-[var(--ink-4)] font-mono">
+          ⌘ K
+        </kbd>
+      </div>
 
-      <p className="pill pill--plain" title={connectionDetail}>
-        <span className={`dot ${lab.dot}`} aria-hidden="true" />
-        {lab.label}
-      </p>
+      {/* Right: Lab connection indicator, scenario, docs, settings, profile */}
+      <div className="flex items-center gap-3 text-[12px]">
+        <div className="flex items-center gap-1.5 rounded-full bg-[var(--green-soft)] px-2.5 py-1 text-[var(--green-state)] font-medium">
+          <span className="h-2 w-2 rounded-full bg-[var(--green-state)]" />
+          <span>{lab.label}</span>
+        </div>
 
-      <p className="pill pill--plain" data-testid="agent-status">
-        <span className={`dot ${agent.dot}`} aria-hidden="true" />
-        {agent.label}
-      </p>
+        <div className="flex items-center gap-1.5 rounded-full bg-[var(--sunken)] px-2.5 py-1 text-[var(--ink-2)] font-medium">
+          <span className="h-2 w-2 rounded-full bg-[var(--ink-4)]" />
+          <span>Agent idle</span>
+        </div>
 
-      <p className="pill pill--plain mono" data-testid="scenario">
-        <span className="text-[var(--ink-4)]">scenario</span>
-        <span className={scenario ? "" : "text-[var(--ink-4)]"}>{scenario ?? "none"}</span>
-      </p>
+        {scenario && (
+          <span className="rounded bg-[var(--sunken)] px-2 py-0.5 font-mono text-[11px] text-[var(--ink-3)]">
+            scenario: {scenario}
+          </span>
+        )}
 
-      {labMode ? (
-        <p className="pill pill--plain mono" title="Backend LAB_MODE">
-          <span className="text-[var(--ink-4)]">mode</span>
-          {labMode}
-        </p>
-      ) : null}
+        <button
+          type="button"
+          onClick={() => void resetLab()}
+          disabled={busy}
+          className="flex items-center gap-1.5 rounded border border-[var(--line-strong)] bg-[var(--surface)] px-2.5 py-1 text-[11.5px] font-medium text-[var(--ink-2)] hover:bg-[var(--sunken)] transition-colors"
+          title="Reset network to baseline"
+        >
+          <IconReset size={13} />
+          <span>{busy ? "Resetting…" : "Reset Lab"}</span>
+        </button>
 
-      <span className="flex-1" />
+        <a
+          href="#docs"
+          className="flex items-center gap-1 text-[var(--ink-3)] hover:text-[var(--ink)] font-medium transition-colors"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z" />
+            <path d="M6 6h10" />
+            <path d="M6 10h10" />
+          </svg>
+          <span>Docs</span>
+        </a>
 
-      <span role="status" aria-live="polite" className="max-w-[280px] truncate text-[11.5px] text-[var(--ink-3)]">
-        {reset.status === "error"
-          ? reset.message
-          : reset.status === "done"
-            ? "Lab reset requested"
-            : ""}
-      </span>
+        <button
+          type="button"
+          className="flex items-center gap-1 text-[var(--ink-3)] hover:text-[var(--ink)] font-medium transition-colors"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+          </svg>
+          <span>Settings</span>
+        </button>
 
-      <button
-        type="button"
-        className="btn"
-        onClick={() => void resetLab()}
-        disabled={busy}
-        title="Return the lab to its known baseline and clear the active scenario"
-      >
-        <IconReset size={14} />
-        {busy ? "Resetting…" : "Reset lab"}
-      </button>
+        {/* User avatar badge */}
+        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--blue-soft)] text-[12px] font-semibold text-[var(--brand)]">
+          K
+        </div>
+      </div>
     </header>
   );
 }

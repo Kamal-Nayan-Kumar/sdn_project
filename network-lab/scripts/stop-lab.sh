@@ -30,10 +30,10 @@ if [ -f "${SCRIPT_DIR}/../network-lab/bin/mnexec" ]; then
     && echo "    mininet.clean ok" || echo "    mininet.clean skipped/failed"
 fi
 
-# Remove the lab socket and per-switch logs.
-rm -f /tmp/sdn-lab.sock
+# Remove the lab socket, token file, and per-switch logs.
+rm -f /tmp/sdn-lab.sock /tmp/sdn-lab.token
 rm -f /tmp/s[0-9]-of13.log /tmp/s[0-9].listen
-echo "    removed lab socket + switch logs"
+echo "    removed lab socket + token + switch logs"
 
 # Anything still alive?
 sleep 1

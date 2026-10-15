@@ -1,3 +1,4 @@
+import React from "react";
 import type {
   ActivityTimelineProps,
   ChatPanelProps,
@@ -90,8 +91,33 @@ export function SlotFrame({
 
 function describeSnapshot(snapshot: NetworkSnapshot | null): string {
   if (!snapshot) return "no snapshot";
-  const { nodes, links } = snapshot.topology;
-  return `${nodes.length} nodes · ${links.length} links · ${snapshot.flows.length} flows`;
+  const topology = snapshot.topology ?? { nodes: [], links: [] };
+  const { nodes, links } = topology;
+  return `${nodes.length} nodes · ${links.length} links · ${snapshot.flows?.length ?? 0} flows`;
+}
+
+/** The four line states the topology canvas must be able to draw. */
+export function TopologyLegend() {
+  return (
+    <div className="legend" aria-hidden="true">
+      <span className="legend-item">
+        <span className="legend-swatch legend-swatch--normal" />
+        normal
+      </span>
+      <span className="legend-item">
+        <span className="legend-swatch legend-swatch--congested" />
+        congested
+      </span>
+      <span className="legend-item">
+        <span className="legend-swatch legend-swatch--alt legend-swatch--dashed" />
+        alternative path
+      </span>
+      <span className="legend-item">
+        <span className="legend-swatch legend-swatch--selected" />
+        selected path
+      </span>
+    </div>
+  );
 }
 
 /* --------------------------------------------------------------------------
@@ -108,6 +134,7 @@ export function TopologySlot(props: TopologyCanvasProps) {
       facts={describeSnapshot(props.snapshot)}
       modulePath="src/components/topology/TopologyCanvas.tsx"
       exportName="TopologyCanvas"
+      headerExtra={<TopologyLegend />}
       propsSignature={`interface TopologyCanvasProps {
   snapshot: NetworkSnapshot | null;
   flowPaths?: Record<string, string[]>;

@@ -43,7 +43,8 @@ def test_app_is_a_fastapi_instance() -> None:
     from app.main import app
 
     assert isinstance(app, FastAPI)
-    paths = {route.path for route in app.routes}
+    # Only consider routes that have a path attribute (exclude IncludedRouter objects)
+    paths = {route.path for route in app.routes if hasattr(route, "path")}
     assert "/health" in paths
 
 

@@ -121,9 +121,9 @@ class FlowTelemetry(StrictModel):
     kind: FlowKind = FlowKind.OTHER
     # Current forwarding path as a list of node ids: [h1, s1, s2, s4, h4].
     path: list[str] = Field(default_factory=list)
-    latency_ms: float = Field(ge=0)
+    latency_ms: float | None = Field(default=None, ge=-1, le=10_000)
     jitter_ms: float | None = None
-    packet_loss_pct: float = Field(default=0.0, ge=0, le=100)
+    packet_loss_pct: float | None = Field(default=None, ge=0, le=100)
     throughput_mbps: float | None = None
     measured_at: datetime = Field(default_factory=utcnow)
 

@@ -101,9 +101,16 @@ def create_app() -> FastAPI:
         try:
             lab_status = app.state.lab.status()
         except LabUnavailable as exc:
-            lab_status = {"reachable": False, "error": str(exc)}
+            lab_status = {"reachable": False, "running": False, "error": str(exc)}
         except Exception as exc:  # pragma: no cover - defensive
-            lab_status = {"reachable": False, "error": f"{type(exc).__name__}: {exc}"}
+            lab_status = {"reachable": False, "running": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        # Normalise the lab's self-reported shape ("running"/"controller_reachable")
+        # into the boolean this endpoint has always promised ("reachable"), so
+        # the dashboard stops reading a perpetual "degraded".
+        if "reachable" not in lab_status:
+            lab_status["reachable"] = bool(
+                lab_status.get("running") and lab_status.get("controller_reachable"))
 
         degraded = not (db_ok and lab_status.get("reachable"))
 

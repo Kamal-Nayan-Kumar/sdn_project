@@ -34,6 +34,7 @@ import type {
   VerificationOutcome,
 } from "./types";
 import { ACTIVITY_GROUP_KEYS, TERMINAL_EVENT_TYPES } from "./types";
+export { TERMINAL_EVENT_TYPES } from "./types";
 import { groupEvents, toolCallsFromEvents } from "./derive";
 
 export type RunStatus = "idle" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled";
@@ -517,8 +518,8 @@ export function normaliseAgentEvent(raw: unknown, fallbackSeq = 0): AgentRunEven
               : "unverified",
           intent_satisfied: asBoolean(o.intent_satisfied, false),
           protected_ok: asBoolean(o.protected_ok, true),
-          before: (asObjectOrNull(o.before) as FlowTelemetry | null) ?? null,
-          after: (asObjectOrNull(o.after) as FlowTelemetry | null) ?? null,
+          before: (asObjectOrNull(o.before) as unknown as FlowTelemetry | null) ?? null,
+          after: (asObjectOrNull(o.after) as unknown as FlowTelemetry | null) ?? null,
           protected_flows: asArray(o.protected_flows).map((p) => {
             const pf = asRecord(p) ?? {};
             return {

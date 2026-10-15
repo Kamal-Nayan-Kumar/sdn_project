@@ -7,7 +7,11 @@ import {
   IconTopology,
   IconChat,
   IconAudit,
+  IconIntent,
+  IconHistory,
+  IconReset,
 } from "./icons";
+import React from "react";
 import { useLabData } from "./lab-data";
 
 /**
@@ -21,9 +25,12 @@ import { useLabData } from "./lab-data";
 
 const CONSOLE_SECTIONS = [
   { id: "region-top", label: "Dashboard", icon: IconDashboard },
-  { id: "region-topology", label: "Network topology", icon: IconTopology },
-  { id: "region-chat", label: "Assistant", icon: IconChat },
-  { id: "region-audit", label: "Metrics and audit", icon: IconAudit },
+  { id: "region-chat", label: "Chat", icon: IconChat },
+  { id: "region-topology", label: "Network Topology", icon: IconTopology },
+  { id: "region-links", label: "Experiments", icon: IconMonitor },
+  { id: "region-flows", label: "Intent Policies", icon: IconIntent },
+  { id: "region-audit", label: "History", icon: IconHistory },
+  { id: "region-audit", label: "Audit Logs", icon: IconAudit },
 ] as const;
 
 function scrollToRegion(id: string) {
@@ -33,25 +40,23 @@ function scrollToRegion(id: string) {
 }
 
 export function Rail() {
-  const { createCongestion, congestion, startMonitor, monitor } = useLabData();
+  const { createCongestion, congestion, startMonitor, monitor, resetLab, reset, connection } = useLabData();
+  const labDown = connection !== "connected";
 
   return (
-    <nav className="app-rail" aria-label="Console">
-      <div className="rail-group">
-        <p className="rail-group-label" id="rail-console-label">
-          Console
-        </p>
-        <ul className="flex list-none flex-col gap-0.5 p-0 m-0" aria-labelledby="rail-console-label">
+    <nav className="app-rail flex flex-col justify-between py-3" aria-label="Console">
+      <div>
+        <ul className="flex list-none flex-col gap-1 p-0 m-0">
           {CONSOLE_SECTIONS.map(({ id, label, icon: Icon }, index) => (
-            <li key={id}>
+            <li key={label}>
               <button
                 type="button"
-                className="rail-item"
+                className={`rail-item ${index === 0 ? "active text-[var(--brand)] bg-[var(--blue-soft)] font-medium" : "text-[var(--ink-2)] hover:bg-[var(--sunken)]"}`}
                 aria-current={index === 0 ? "page" : undefined}
                 onClick={() => scrollToRegion(id)}
                 title={label}
               >
-                <Icon size={16} />
+                <Icon size={17} />
                 <span className="rail-label">{label}</span>
               </button>
             </li>
@@ -59,40 +64,44 @@ export function Rail() {
         </ul>
       </div>
 
-      <div className="rail-group mt-1 border-t border-[var(--line)] pt-3">
-        <p className="rail-group-label" id="rail-controls-label">
-          Lab controls
+      <div className="rail-group border-t border-[var(--line)] pt-3 mt-4">
+        <p className="px-3 pb-2 text-[10.5px] font-semibold uppercase tracking-wider text-[var(--ink-4)]">
+          LAB CONTROLS
         </p>
-        <ul className="flex list-none flex-col gap-0.5 p-0 m-0" aria-labelledby="rail-controls-label">
-          <li>
-            <button
-              type="button"
-              className="btn btn--block btn--rail"
-              onClick={() => void createCongestion()}
-              disabled={congestion.status === "running"}
-              title="Start the controlled congestion scenario on the lab"
-            >
-              <IconCongestion size={16} />
-              <span className="rail-label">
-                {congestion.status === "running" ? "Starting…" : "Create congestion"}
-              </span>
-            </button>
-          </li>
-          <li>
-            <button
-              type="button"
-              className="btn btn--block btn--rail"
-              onClick={() => void startMonitor()}
-              disabled={monitor.status === "running"}
-              title="Start proactive intent monitoring"
-            >
-              <IconMonitor size={16} />
-              <span className="rail-label">
-                {monitor.status === "running" ? "Starting…" : "Start monitoring"}
-              </span>
-            </button>
-          </li>
-        </ul>
+        <div className="flex flex-col gap-1.5 px-2">
+          <button
+            type="button"
+            className="flex items-center gap-2 rounded-lg border border-[var(--red-state)] bg-[var(--surface)] px-3 py-2 text-[12px] font-medium text-[var(--red-state)] hover:bg-[var(--red-soft)] transition-colors"
+            onClick={() => void createCongestion()}
+            disabled={labDown}
+            title={labDown ? "Lab offline — controls disabled" : "Start a controlled congestion scenario on link s2-s4"}
+          >
+            <span className="text-[var(--red-state)]">⚡</span>
+            <span>Create Congestion</span>
+          </button>
+
+          <button
+            type="button"
+            className="flex items-center gap-2 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-[12px] font-medium text-[var(--ink-2)] hover:bg-[var(--sunken)] transition-colors"
+            onClick={() => void resetLab()}
+            disabled={labDown || reset.status === "running"}
+            title="Reset network to baseline"
+          >
+            <IconReset size={14} />
+            <span>Reset Network</span>
+          </button>
+
+          <button
+            type="button"
+            className="flex items-center gap-2 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2 text-[12px] font-medium text-[var(--ink-2)] hover:bg-[var(--sunken)] transition-colors"
+            onClick={() => void startMonitor()}
+            disabled={labDown}
+            title={labDown ? "Lab offline — controls disabled" : "Start monitoring scenario"}
+          >
+            <span className="text-[14px]">▷</span>
+            <span>Start Monitoring</span>
+          </button>
+        </div>
 
         <p
           role="status"
@@ -112,10 +121,14 @@ function labControlNote(
   monitorStatus: string,
   monitorMessage: string | null,
 ): string {
-  if (congestionStatus === "error") return congestionMessage ?? "Congestion request failed";
-  if (monitorStatus === "error") return monitorMessage ?? "Monitoring request failed";
-  if (congestionStatus === "running" || monitorStatus === "running") return "Waiting for the lab…";
-  if (congestionStatus === "done") return congestionMessage ?? "Congestion scenario requested";
-  if (monitorStatus === "done") return monitorMessage ?? "Monitoring requested";
-  return "Controls post to the backend; nothing runs until it answers.";
+  const parts: string[] = [];
+  if (congestionStatus !== "idle") {
+    parts.push(`Congestion: ${congestionStatus}${congestionMessage ? " — " + congestionMessage : ""}`);
+  }
+  if (monitorStatus !== "idle") {
+    parts.push(`Monitor: ${monitorStatus}${monitorMessage ? " — " + monitorMessage : ""}`);
+  }
+  return parts.length > 0
+    ? parts.join(" · ")
+    : "Controls are live. Results appear here after each action.";
 }

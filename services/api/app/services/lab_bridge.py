@@ -58,13 +58,23 @@ class LabBridgeClient:
         settings = get_settings()
         self.socket_path = socket_path or os.environ.get(
             "SDN_LAB_SOCKET", "/tmp/sdn-lab.sock")
-        # Prefer explicit token, then env var, then settings
-        # Only use settings token if it's actually configured (not a placeholder)
+        # Prefer explicit token, then env var, then /tmp/sdn-lab.token, then settings
         env_token = os.environ.get("LAB_API_TOKEN", "")
+        token_file = "/tmp/sdn-lab.token"
+        file_token = ""
+        if not env_token and os.path.exists(token_file):
+            try:
+                with open(token_file, "r") as f:
+                    file_token = f.read().strip()
+            except OSError:
+                pass
+
         if token:
             self.token = token
         elif env_token:
             self.token = env_token
+        elif file_token:
+            self.token = file_token
         elif settings.bridge_token_configured:
             self.token = settings.lab_bridge_token
         else:

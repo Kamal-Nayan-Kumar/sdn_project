@@ -73,3 +73,10 @@ ovs.log
 *.pdf
 !docs/**/*.pdf
 report/
+
+# --- playwright / test artifacts & backups ---
+.playwright-mcp/
+playwright-report/
+test-results/
+*.bak
+*.png

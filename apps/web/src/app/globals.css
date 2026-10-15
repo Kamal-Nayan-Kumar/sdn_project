@@ -882,6 +882,63 @@
    Legend
    -------------------------------------------------------------------------- */
 
+/* --------------------------------------------------------------------------
+    Topology canvas
+    -------------------------------------------------------------------------- */
+
+.topology-canvas {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--canvas);
+}
+
+.topology-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.topology-empty strong {
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.topology-overlay {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 70%;
+  pointer-events: none;
+}
+
+.topology-facts {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  font-size: 10.5px;
+  color: var(--ink-4);
+  pointer-events: none;
+}
+
+.legend-note {
+  color: var(--ink-4);
+  font-style: italic;
+}
+
 .legend {
   display: flex;
   align-items: center;

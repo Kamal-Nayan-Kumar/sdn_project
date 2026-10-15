@@ -1,5 +1,6 @@
 "use client";
 
+import React from "react";
 import {
   createContext,
   useCallback,
@@ -10,7 +11,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { ConnectionState, IsoDateTime, LabHealth, NetworkSnapshot } from "@/types";
+import type { AgentRunSummary, ConnectionState, IntentSpec, IsoDateTime, LabHealth, NetworkSnapshot } from "@/types";
 
 /**
  * Single polling point for the dashboard shell.
@@ -20,12 +21,6 @@ import type { ConnectionState, IsoDateTime, LabHealth, NetworkSnapshot } from "@
  * reported as the state it actually is: `offline` when the backend cannot be
  * reached at all, `degraded` when it answers but a dependency it needs is
  * missing. The two are never collapsed into a single "error".
- *
- * NOTE (ownership): agent B owns `src/lib/**` and may supply the real
- * telemetry/SSE hooks there. When that lands, replace the two `useEffect`
- * pollers below with the hooks from `@/lib` and keep this context's shape —
- * the header, rail, metric strip and sidebar all read it through
- * `useLabData()` and do not care where the values come from.
  */
 
 const HEALTH_PATH = "/backend/health";
@@ -35,8 +30,8 @@ const SNAPSHOT_INTERVAL_MS = 3000;
 
 /** Expected backend routes for the lab controls. Adjust in this one place. */
 const RESET_PATH = "/api/lab/reset";
-const CONGESTION_PATH = "/api/lab/scenario/congestion";
-const MONITOR_PATH = "/api/lab/scenario/monitor";
+const CONGESTION_PATH = "/api/lab/scenarios/congestion";
+const MONITOR_PATH = "/api/lab/scenarios/monitor";
 
 export interface LabActionState {
   status: "idle" | "running" | "done" | "error";
@@ -57,6 +52,8 @@ interface LabDataValue {
   reset: LabActionState;
   congestion: LabActionState;
   monitor: LabActionState;
+  currentRun: AgentRunSummary | null;
+  setCurrentRun: (run: AgentRunSummary | null) => void;
   resetLab: () => Promise<void>;
   createCongestion: () => Promise<void>;
   startMonitor: () => Promise<void>;
@@ -67,6 +64,7 @@ const LabDataContext = createContext<LabDataValue | null>(null);
 
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, {
+    credentials: "include",
     signal,
     cache: "no-store",
     headers: { accept: "application/json" },
@@ -77,12 +75,17 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   return (await response.json()) as T;
 }
 
-async function postAction(path: string, signal?: AbortSignal): Promise<string> {
+async function postAction(path: string, body?: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
   const response = await fetch(path, {
+    credentials: "include",
     method: "POST",
     signal,
     cache: "no-store",
-    headers: { accept: "application/json" },
+    headers: { 
+      accept: "application/json",
+      ...(body ? { "Content-Type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
   });
   if (!response.ok) {
     throw new Error(`${path} returned HTTP ${response.status}`);
@@ -99,6 +102,7 @@ export function LabDataProvider({ children }: { children: ReactNode }) {
   const [reset, setReset] = useState<LabActionState>(IDLE_ACTION);
   const [congestion, setCongestion] = useState<LabActionState>(IDLE_ACTION);
   const [monitor, setMonitor] = useState<LabActionState>(IDLE_ACTION);
+  const [currentRun, setCurrentRun] = useState<AgentRunSummary | null>(null);
 
   const refresh = useCallback(() => setPollNonce((n) => n + 1), []);
 
@@ -135,7 +139,8 @@ export function LabDataProvider({ children }: { children: ReactNode }) {
         const next = await getJson<NetworkSnapshot>(SNAPSHOT_PATH, controller.signal);
         if (stopped) return;
         setSnapshot(next);
-        setSnapshotDetail(`captured ${next.captured_at}`);
+        const timestamp = next.captured_at || (next as any).measured_at;
+        setSnapshotDetail(timestamp ? `captured ${timestamp}` : "telemetry updated");
       } catch (error) {
         if (stopped) return;
         const name = (error as Error)?.name;
@@ -155,10 +160,10 @@ export function LabDataProvider({ children }: { children: ReactNode }) {
   }, [pollNonce]);
 
   const runAction = useCallback(
-    async (path: string, apply: (state: LabActionState) => void, verb: string) => {
+    async (path: string, apply: (state: LabActionState) => void, verb: string, body?: Record<string, unknown>) => {
       apply({ status: "running", message: null });
       try {
-        const detail = await postAction(path);
+        const detail = await postAction(path, body);
         apply({ status: "done", message: detail });
         refresh();
       } catch (error) {
@@ -173,7 +178,11 @@ export function LabDataProvider({ children }: { children: ReactNode }) {
     [runAction],
   );
   const createCongestion = useCallback(
-    () => runAction(CONGESTION_PATH, setCongestion, "Create congestion"),
+    () => runAction(CONGESTION_PATH, setCongestion, "Create congestion", {
+      link_id: "s2-s4",
+      rate_mbps: 400.0,
+      duration_seconds: 0.0,
+    }),
     [runAction],
   );
   const startMonitor = useCallback(
@@ -206,12 +215,14 @@ export function LabDataProvider({ children }: { children: ReactNode }) {
       reset,
       congestion,
       monitor,
+      currentRun,
+      setCurrentRun,
       resetLab,
       createCongestion,
       startMonitor,
       refresh,
     };
-  }, [congestion, health, monitor, refresh, reset, resetLab, createCongestion, startMonitor, snapshot, snapshotDetail]);
+  }, [congestion, health, monitor, refresh, reset, resetLab, createCongestion, startMonitor, snapshot, snapshotDetail, currentRun]);
 
   return <LabDataContext.Provider value={value}>{children}</LabDataContext.Provider>;
 }

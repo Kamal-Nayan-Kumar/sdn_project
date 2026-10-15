@@ -1,5 +1,6 @@
 "use client";
 
+import React from "react";
 import { useLabData } from "./lab-data";
 import { FLOW_KIND_LABEL } from "./metric-strip";
 import { formatCount, formatMs, formatMbps, formatPct, formatPath, formatRelative } from "./format";
@@ -41,7 +42,13 @@ export function LinkMetricsPanel({
   snapshot: NetworkSnapshot | null;
   suspectLinks?: string[];
 }) {
-  const links = snapshot?.links ?? [];
+  // Normalize links: handle both array and object (keyed by link_id) forms
+  const rawLinks = snapshot?.links;
+  const links = rawLinks
+    ? Array.isArray(rawLinks)
+      ? rawLinks
+      : Object.values(rawLinks as Record<string, LinkTelemetry>)
+    : [] as LinkTelemetry[];
   const congested = new Set(snapshot?.congested_links ?? []);
   const suspects = new Set(suspectLinks ?? []);
 
@@ -62,7 +69,7 @@ export function LinkMetricsPanel({
           <span>
             {snapshot
               ? "The lab reported a topology but no link counters."
-              : "Waiting for the backend at 127.0.0.1:8000 to answer /api/lab/snapshot."}
+              : "Waiting for the backend at 127.0.0.1:8000 to answer /v1/snapshot."}
           </span>
         </p>
       ) : (
@@ -126,7 +133,13 @@ export function FlowPanel({
   snapshot: NetworkSnapshot | null;
   intent: IntentSpec | null;
 }) {
-  const flows: FlowTelemetry[] = snapshot?.flows ?? [];
+  // Normalize flows: handle both array and object forms
+  const rawFlows = snapshot?.flows;
+  const flows = rawFlows
+    ? Array.isArray(rawFlows)
+      ? rawFlows
+      : Object.values(rawFlows as Record<string, FlowTelemetry>)
+    : [] as FlowTelemetry[];
 
   return (
     <section className="panel" id="region-flows" aria-label="Flow information">
@@ -168,8 +181,10 @@ export function FlowPanel({
                   flow.src_host === intent.src_host &&
                   flow.dst_host === intent.dst_host;
                 const overTarget = isIntent && flow.latency_ms > (intent?.max_latency_ms ?? Infinity);
+                // Use flow.flow_id as key, fall back to flow.src_host + dst_host if undefined
+                const key = flow.flow_id || `${flow.src_host}→${flow.dst_host}→${flow.kind}`;
                 return (
-                  <tr key={flow.flow_id}>
+                  <tr key={key}>
                     <th scope="row" className="mono px-3 py-[7px] text-left font-normal text-[var(--ink)]">
                       {flow.flow_id}
                     </th>
@@ -271,7 +286,7 @@ export function RecoveryAuditPanel({
                 <span className="mono">risk {run.validation.risk_level}</span>
                 <span className="mx-2 text-[var(--ink-4)]">·</span>
                 <span className="mono">
-                  {run.validation.checks_passed}/{run.validation.checks.length} checks passed
+                  {run.validation.checks.filter(c => c.passed).length}/{run.validation.checks.length} checks passed
                 </span>
                 {run.validation.rejection_reason ? (
                   <span className="ml-2 u-red">{run.validation.rejection_reason}</span>

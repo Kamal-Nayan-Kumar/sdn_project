@@ -200,7 +200,7 @@ export interface SafetyCheck {
 export interface ValidationResult {
   readonly approved: boolean;
   readonly checks?: readonly SafetyCheck[];
-  readonly rejection_reason?: string | null;
+    readonly rejection_reason?: string | null;
   readonly risk_level?: RiskLevel;
   readonly requires_approval?: boolean;
   readonly validated_at?: string;
@@ -287,6 +287,11 @@ export type FinalOutcome =
   | "cancelled"
   | "lab_offline"
   | "llm_unavailable"
+  | "error"
+  | "action_rejected"
+  | "cancelled"
+  | "lab_offline"
+  | "llm_unavailable"
   | "error";
 
 /* -------------------------------------------------------------------------- */
@@ -351,7 +356,7 @@ interface AgentRunEventBase {
   /** ISO-8601 UTC timestamp. */
   readonly ts: string;
   /** Which activity group this event belongs to. */
-  readonly group: ActivityGroupKey | ExtraGroupKey;
+  readonly group?: ActivityGroupKey | ExtraGroupKey;
 }
 
 export interface RunStartedEvent extends AgentRunEventBase {
