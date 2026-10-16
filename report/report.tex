@@ -490,91 +490,79 @@ every \texttt{add\_node} and \texttt{add\_edge} call is reflected exactly once.
 Solid arrows are unconditional edges; dashed arrows carry the condition label
 from the three routing functions.
 
-\begin{figure}[H]
+\begin{figure}[htbp]
 \centering
-% The graph is drawn top-to-bottom on the happy path (left column), with
-% refusal / terminal branches fanning out to the right.
 \begin{tikzpicture}[
-    % node styles
-    proc/.style={
-        draw=sdnblue, rounded corners=3pt,
-        minimum width=32mm, minimum height=8mm,
-        align=center, font=\small, fill=blue!5
-    },
-    gate/.style={
-        draw=sdnamber, very thick, rounded corners=3pt,
-        minimum width=32mm, minimum height=8mm,
-        align=center, font=\small\bfseries, fill=yellow!8
-    },
-    term/.style={
-        draw=sdnred, rounded corners=3pt,
-        minimum width=26mm, minimum height=7mm,
-        align=center, font=\scriptsize, fill=red!5
-    },
-    endnode/.style={
-        draw=sdngrey, very thick, circle,
-        minimum size=10mm, font=\small\bfseries, fill=gray!10
-    },
-    % arrow styles
-    ar/.style={-{Stealth[length=2mm]}, thick, draw=sdngrey},
-    cond/.style={-{Stealth[length=2mm]}, thick, dashed, draw=sdngrey},
-    elbl/.style={font=\scriptsize, fill=white, inner sep=1pt, text=sdngrey}
+  scale=0.8, transform shape,
+  proc/.style={draw=sdnblue, rounded corners=3pt,
+    minimum width=34mm, minimum height=8mm,
+    align=center, font=\small, fill=blue!5},
+  gate/.style={draw=sdnamber, very thick, rounded corners=3pt,
+    minimum width=34mm, minimum height=8mm,
+    align=center, font=\small, fill=yellow!8},
+  term/.style={draw=sdnred, rounded corners=3pt,
+    minimum width=26mm, minimum height=7mm,
+    align=center, font=\scriptsize, fill=red!5},
+  endnode/.style={draw=sdngrey, very thick, circle,
+    minimum size=10mm, font=\small\bfseries, fill=gray!10},
+  ar/.style={-{Stealth[length=2mm]}, thick, draw=sdngrey},
+  cond/.style={-{Stealth[length=2mm]}, thick, dashed, draw=sdngrey},
+  line/.style={thick, draw=sdngrey},
+  elbl/.style={font=\scriptsize\itshape, text=sdngrey, fill=white, inner sep=1pt}
 ]
 
-% ── Happy-path column (left), top to bottom ──────────────────────────────────
-\node[proc]                        (intent)       {\texttt{intent}};
-\node[proc,  below=10mm of intent] (observe)      {\texttt{observe}};
-\node[gate,  below=10mm of observe](evidence)     {\texttt{evidence} \quad{\scriptsize\textit{Gate\,1}}};
-\node[proc,  below=10mm of evidence](diagnose)    {\texttt{diagnose}};
-\node[gate,  below=10mm of diagnose](validate)    {\texttt{validate} \quad{\scriptsize\textit{Gate\,2}}};
-\node[proc,  below=10mm of validate](execute)     {\texttt{execute}};
-\node[proc,  below=10mm of execute] (obs_after)   {\texttt{observe\_after}};
-\node[gate,  below=10mm of obs_after](verify)     {\texttt{verify} \quad{\scriptsize\textit{Gate\,3}}};
-\node[proc,  below=10mm of verify]  (finish)      {\texttt{finish}};
-\node[endnode,below=10mm of finish] (END)         {\textbf{END}};
+% ---- Happy-path column (x = 0), one fixed row per node ----
+\node[proc]  (intent)      at (0,0)     {\texttt{intent}};
+\node[proc]  (observe)     at (0,-1.4)  {\texttt{observe}};
+\node[gate]  (evidence)    at (0,-2.8)  {\texttt{evidence}\;{\scriptsize\textit{Gate\,1}}};
+\node[proc]  (diagnose)    at (0,-4.2)  {\texttt{diagnose}};
+\node[gate]  (validate)    at (0,-5.6)  {\texttt{validate}\;{\scriptsize\textit{Gate\,2}}};
+\node[proc]  (execute)     at (0,-7.0)  {\texttt{execute}};
+\node[proc]  (obs_after)   at (0,-8.4)  {\texttt{observe\_after}};
+\node[gate]  (verify)      at (0,-9.8)  {\texttt{verify}\;{\scriptsize\textit{Gate\,3}}};
+\node[proc]  (finish)      at (0,-11.2) {\texttt{finish}};
+\node[endnode] (END)       at (0,-12.6) {END};
 
-% ── Branch / terminal column (right) ─────────────────────────────────────────
-\node[term, right=40mm of intent]   (stop)        {\texttt{stop}};
-\node[term, right=40mm of evidence] (satisfied)   {\texttt{satisfied}};
-\node[term, right=40mm of diagnose] (abstain)     {\texttt{abstain}};
-\node[term, right=40mm of validate] (hold)        {\texttt{hold}};
+% ---- Terminal column (x = 5.4), each aligned with a row it comes from ----
+\node[term] (stop)      at (5.4,0)    {\texttt{stop}};
+\node[term] (satisfied) at (5.4,-2.8) {\texttt{satisfied}};
+\node[term] (abstain)   at (5.4,-4.2) {\texttt{abstain}};
+\node[term] (hold)      at (5.4,-5.6) {\texttt{hold}};
 
-% ── Happy-path edges (solid) ─────────────────────────────────────────────────
-\draw[ar] (intent)   -- (observe);
-\draw[ar] (observe)  -- (evidence);
-\draw[ar] (diagnose) -- (validate);
-\draw[ar] (execute)  -- (obs_after);
-\draw[ar] (obs_after)-- (verify);
-\draw[ar] (verify)   -- (finish);
-\draw[ar] (finish)   -- (END);
+% ---- Unconditional edges down the happy path ----
+\draw[ar] (intent)    -- (observe);
+\draw[ar] (observe)   -- (evidence);
+\draw[ar] (obs_after) -- (verify);
+\draw[ar] (verify)    -- (finish);
+\draw[ar] (finish)    -- (END);
 
-% ── Conditional edges (dashed) ───────────────────────────────────────────────
+% ---- Conditional edges on the happy path (dashed) ----
+\draw[cond] (evidence) -- node[elbl, right, pos=0.5]{diagnose} (diagnose);
+\draw[cond] (validate) -- node[elbl, right, pos=0.5]{execute}  (execute);
+\draw[cond] (execute)  -- (obs_after);
 
-% intent → stop (clarify) / intent → observe already a solid edge above
-\draw[cond] (intent.east)    -- node[elbl,above]{\textit{clarify}}    (stop.west);
+% ---- Conditional branches to the terminal column ----
+\draw[cond] (intent.east) -- node[elbl, above, pos=0.5]{clarify} (stop.west);
+\draw[cond] (evidence.east) -- node[elbl, above, pos=0.5]{satisfied} (satisfied.west);
+% abstain leaves evidence on its own channel and drops to its own row
+\draw[cond] (evidence.east) -- ++(0.5,0) |- (abstain.west);
+\node[elbl, above] at (3.0,-4.2) {abstain};
+\draw[cond] (validate.east) -- node[elbl, above, pos=0.5]{hold} (hold.west);
+% reject goes out the left side, over the top, and into stop from above
+\draw[cond] (validate.west) -- (-2.2,-5.6) -- (-2.2,1.2) -- (5.4,1.2) -- (stop.north);
+\node[elbl, left] at (-2.2,-3.0) {reject};
 
-% evidence → satisfied / abstain / diagnose
-\draw[cond] (evidence.east)  -- node[elbl,above]{\textit{satisfied}}  (satisfied.west);
-\draw[cond] (evidence.east)  -- ++(8mm,0) |- node[elbl,right,pos=0.25]{\textit{abstain}}  (abstain.west);
-\draw[cond] (evidence.south) -- node[elbl,right]{\textit{diagnose}}   (diagnose.north);
-
-% validate → execute / hold / stop
-\draw[cond] (validate.south) -- node[elbl,right]{\textit{execute}}    (execute.north);
-\draw[cond] (validate.east)  -- node[elbl,above]{\textit{hold}}       (hold.west);
-\draw[cond] (validate.east)  -- ++(8mm,0) |- node[elbl,right,pos=0.25]{\textit{reject}}  (stop.east);
-
-% terminals → END
-\draw[ar]   (stop.south)      -- ++(0,-4mm) -| (END.east);
-\draw[ar]   (satisfied.south) -- ++(0,-4mm) -|
-            node[elbl,above,pos=0.1]{}  (stop.north);
-\draw[ar]   (abstain.south)   -- ++(0,-4mm) -| (stop.east);
-\draw[ar]   (hold.south)      -- ++(0,-4mm) -| (END.east);
+% ---- Terminal nodes all lead to END along a shared right-hand bus ----
+\draw[ar]   (stop.east) -- (7.6,0) -- (7.6,-12.6) -- (END.east);
+\draw[line] (satisfied.east) -- (7.6,-2.8);
+\draw[line] (abstain.east)   -- (7.6,-4.2);
+\draw[line] (hold.east)      -- (7.6,-5.6);
 
 \end{tikzpicture}
 \caption{Complete LangGraph graph compiled in \texttt{graph.py}.
 Solid arrows: unconditional \texttt{add\_edge}.
-Dashed arrows: \texttt{add\_conditional\_edges} branches with their routing label.
-Amber nodes are the three deterministic gates; red nodes are terminal sinks.}
+Dashed arrows: \texttt{add\_conditional\_edges} branches, labelled with the route name.
+Amber nodes are the three deterministic gates; red nodes are terminal sinks, which all lead to END along the right-hand line.}
 \label{fig:langgraph}
 \end{figure}
 

@@ -47,9 +47,14 @@ if [ -z "${LAB_API_TOKEN+x}" ]; then
   # Variable is not set at all - generate a random token
   export LAB_API_TOKEN="$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')"
 fi
-# Write token to a known file so local backend can authenticate automatically
-echo -n "${LAB_API_TOKEN}" > /tmp/sdn-lab.token
-chmod 600 /tmp/sdn-lab.token
+TOKEN_FILE="/tmp/sdn-lab-${USER:-$(id -u)}.token"
+# If standard /tmp/sdn-lab.token exists and is owned by someone else, use user-specific token file
+if touch /tmp/sdn-lab.token 2>/dev/null; then
+  TOKEN_FILE="/tmp/sdn-lab.token"
+fi
+echo -n "${LAB_API_TOKEN}" > "${TOKEN_FILE}"
+chmod 600 "${TOKEN_FILE}" 2>/dev/null || true
+
 
 
 echo "==> SDN network lab"

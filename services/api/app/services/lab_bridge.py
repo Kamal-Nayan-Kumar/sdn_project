@@ -60,14 +60,20 @@ class LabBridgeClient:
             "SDN_LAB_SOCKET", "/tmp/sdn-lab.sock")
         # Prefer explicit token, then env var, then /tmp/sdn-lab.token, then settings
         env_token = os.environ.get("LAB_API_TOKEN", "")
-        token_file = "/tmp/sdn-lab.token"
+        user_token_file = f"/tmp/sdn-lab-{os.environ.get('USER', os.getuid())}.token"
+        token_files = ["/tmp/sdn-lab.token", user_token_file]
         file_token = ""
-        if not env_token and os.path.exists(token_file):
-            try:
-                with open(token_file, "r") as f:
-                    file_token = f.read().strip()
-            except OSError:
-                pass
+        if not env_token:
+            for tf in token_files:
+                if os.path.exists(tf):
+                    try:
+                        with open(tf, "r") as f:
+                            content = f.read().strip()
+                            if content:
+                                file_token = content
+                                break
+                    except OSError:
+                        pass
 
         if token:
             self.token = token
