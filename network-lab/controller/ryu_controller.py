@@ -192,6 +192,9 @@ class SDNIntentController(app_manager.RyuApp):
         self.mac_to_port: dict[int, dict[str, int]] = {}
         self.datapaths: dict[int, Any] = {}
         self.port_stats: dict[int, dict[int, dict[str, int]]] = {}
+        # When `port_stats` was last refreshed. Published as `captured_at` so a
+        # consumer can tell a stale cached copy from a fresh reading.
+        self.port_stats_captured_at: float = 0.0
         self.flow_stats: dict[int, list[dict[str, Any]]] = {}
         # The WSGI context is passed in by name, not as `wsgi`.
         self.wsgi = kwargs.get("wsgi") or next(
@@ -225,6 +228,8 @@ class SDNIntentController(app_manager.RyuApp):
         body = ev.msg.body
         dpid = ev.msg.datapath.id
         self.port_stats.setdefault(dpid, {})
+        if body:
+            self.port_stats_captured_at = time.time()
         for stat in body:
             self.port_stats[dpid][stat.port_no] = {
                 "rx_bytes": stat.rx_bytes,
@@ -292,9 +297,26 @@ class SDNIntentController(app_manager.RyuApp):
             out_port = (ofproto.OFPP_FLOOD if _is_multicast(dst)
                         else self.mac_to_port[dpid].get(dst, ofproto.OFPP_FLOOD))
             actions = [parser.OFPActionOutput(out_port)]
+            match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
             if out_port != ofproto.OFPP_FLOOD:
-                match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
                 self.add_flow(datapath, 1, match, actions)
+            elif not _is_multicast(dst):
+                # Unknown *unicast*: the destination MAC is not in the table
+                # yet, so the frame is flooded -- but it still needs a flow.
+                #
+                # Without one, every packet of such a flow is a table miss and
+                # is sent to this controller individually. A destination that
+                # only ever receives (a UDP sink, for instance) never transmits,
+                # so its MAC is never learned, so it never gets a flow, so the
+                # flow never matches. The miss rate stays at 100% and the
+                # control channel saturates: measured at 85 pkt/s this drove
+                # the switches to ~75% CPU each and pushed flow latency from
+                # 35 ms to over 2 s, which looked exactly like link congestion
+                # while the link counters barely moved.
+                #
+                # Priority 0 keeps it below the specific entry installed above,
+                # so once the MAC *is* learned the unicast flow takes over.
+                self.add_flow(datapath, 0, match, actions)
             self._send_packet(datapath, msg, in_port, actions)
         else:
             out_port = (ofproto.OFPP_FLOOD if _is_multicast(dst)
@@ -422,12 +444,18 @@ class IntentRestController(ControllerBase):
         is the telemetry source of record for the `of13switch.py` backend. The
         values come from real OFPT_PORT_STATS_REQUEST/REPLY exchanges, not
         from anything the switch reports out of band.
+
+        `captured_at` is when these counters were *received*, not when this
+        request arrived. The two differ by up to one poll interval, and a
+        consumer differencing two reads needs to know which copy it holds:
+        without it, reading the cache twice looks exactly like an idle link.
         """
         with STATE_LOCK:
             stats = {str(dpid): {str(port): dict(counters)
                                  for port, counters in ports.items()}
                      for dpid, ports in self.app.port_stats.items()}
-        return self._json({"switches": stats, "captured_at": time.time()})
+            captured_at = getattr(self.app, "port_stats_captured_at", 0.0)
+        return self._json({"switches": stats, "captured_at": captured_at or time.time()})
 
     @route("sdn", "/v1/flow-overrides", methods=["GET"])
     def flow_overrides(self, req, **kwargs):

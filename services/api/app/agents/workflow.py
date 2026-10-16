@@ -342,18 +342,48 @@ def assess_evidence_node(state: st.AgentState) -> st.AgentState:
     }
 
 
+# How many of a flow's individual samples may exceed the latency target before
+# the intent counts as breached. The lab measures each flow with a 10-packet
+# ping, so a single slow packet from scheduler noise is not a violation -- but a
+# majority, or any sustained run, is. Expressed as a fraction so it does not
+# depend on the sample count the lab happens to use.
+VIOLATION_SAMPLE_FRACTION = 0.25
+
+
 def _is_violated(flow: FlowTelemetry | None,
                  intent: IntentSpec) -> bool | None:
     """Does the measurement breach the intent?
 
     Returns None when there is no usable measurement, so "unknown" never
     silently becomes "not violated".
+
+    The verdict uses the individual samples when the lab reported them, not
+    just their mean. Comparing the mean alone made the verdict a coin flip on
+    a flow oscillating around the threshold: a run that sampled 9 packets at
+    40-56 ms against a 50 ms target saw a mean of 41.8 ms, concluded
+    `intent_satisfied`, and proposed nothing -- while the dashboard showed the
+    same flow breaching. The mean hides exactly the behaviour a latency SLO is
+    meant to catch. `max_latency_ms` from the measurement is preferred when
+    present, since the lab computes it from the same samples.
     """
     if flow is None or flow.latency_ms is None or flow.latency_ms < 0:
         return None
     if flow.packet_loss_pct and flow.packet_loss_pct > 0:
         return True
-    return flow.latency_ms > intent.max_latency_ms
+
+    target = intent.max_latency_ms
+    samples = [s for s in (getattr(flow, "samples", None) or [])
+               if isinstance(s, (int, float)) and s >= 0]
+    if len(samples) >= 2:
+        over = sum(1 for s in samples if s > target)
+        if over / len(samples) >= VIOLATION_SAMPLE_FRACTION:
+            return True
+        return False
+
+    peak = getattr(flow, "max_latency_ms", None)
+    if isinstance(peak, (int, float)) and peak > target:
+        return True
+    return flow.latency_ms > target
 
 
 # ---------------------------------------------------------------------------

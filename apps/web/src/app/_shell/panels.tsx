@@ -74,13 +74,17 @@ export function LinkMetricsPanel({
         </p>
       ) : (
         <div className="panel-body panel-body--tight overflow-x-auto">
+          {/* No latency column: the lab reports `delay_ms` (the delay
+              configured for the link) and per-flow `latency_ms` from ICMP, but
+              never a measured per-link latency -- there is no way to attribute
+              an end-to-end RTT to a single hop. The column was always `--`.
+              The configured delay is still on the topology tooltip. */}
           <table className="data-table">
             <thead>
               <tr>
                 <th scope="col">Link</th>
                 <th scope="col">Utilisation</th>
                 <th scope="col">Capacity</th>
-                <th scope="col">Latency</th>
                 <th scope="col">Status</th>
               </tr>
             </thead>
@@ -111,7 +115,6 @@ export function LinkMetricsPanel({
                       </span>
                     </td>
                     <td className="num">{formatMbps(link.capacity_mbps)}</td>
-                    <td className="num">{formatMs(link.latency_ms)}</td>
                     <td>
                       <span className={chip.className}>{chip.label}</span>
                     </td>

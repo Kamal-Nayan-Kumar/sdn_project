@@ -133,6 +133,7 @@ export function LabDataProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const controller = new AbortController();
     let stopped = false;
+    let timer: number | undefined;
 
     const poll = async () => {
       try {
@@ -147,15 +148,21 @@ export function LabDataProvider({ children }: { children: ReactNode }) {
         if (name === "AbortError") return;
         setSnapshot(null);
         setSnapshotDetail(name === "TypeError" ? "backend unreachable" : `snapshot error: ${String(error)}`);
+      } finally {
+        // Schedule the next poll only once this one has come back. A fixed
+        // `setInterval` fires again regardless, so when a collection takes
+        // longer than the interval the requests pile up: the lab serialises
+        // them, so the dashboard ends up a minute behind and each response
+        // is superseded before it is ever rendered.
+        if (!stopped) timer = window.setTimeout(poll, SNAPSHOT_INTERVAL_MS);
       }
     };
 
     void poll();
-    const timer = window.setInterval(poll, SNAPSHOT_INTERVAL_MS);
     return () => {
       stopped = true;
       controller.abort();
-      window.clearInterval(timer);
+      if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [pollNonce]);
 

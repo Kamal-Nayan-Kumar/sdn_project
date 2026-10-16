@@ -132,6 +132,15 @@
   --green: var(--color-green-state);
   --green-soft: var(--color-green-soft);
 
+  /* `*-state` aliases. Components (notably TopologyCanvas) reference these
+     names directly in SVG presentation attributes and Tailwind arbitrary
+     values. Without them `var(--red-state)` is unresolvable, the declaration
+     is dropped, and the attribute falls back to its initial value — an SVG
+     `stroke` of `none`, i.e. a red link drawn invisibly. */
+  --red-state: var(--color-red-state);
+  --amber-state: var(--color-amber-state);
+  --green-state: var(--color-green-state);
+
   /* layout metrics */
   --rail-w: 208px;
   --chat-w: 380px;

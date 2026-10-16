@@ -255,9 +255,45 @@ class FlowEntry:
             return True
         return False
 
+    @staticmethod
+    def _flat_fields(match: Any) -> dict[str, Any]:
+        """`{field: value}` for a parsed OFPMatch.
+
+        `OFPMatch.to_jsondict()` does *not* return a flat mapping. It nests
+        every field one level deeper::
+
+            {'OFPMatch': {'oxm_fields': [{'OXMTlv': {'field': 'in_port',
+                                                     'value': 2, ...}}],
+                          'length': 32, 'type': 1}}
+
+        Reading that as flat made every lookup miss, so `fields` looked
+        non-empty but contained no recognisable keys: no field ever
+        compared equal, and *every* frame missed the flow table and was sent
+        to the controller as a PACKET_IN. Flows were installed and then never
+        used, which is why the flood pegged the control plane at 85 pkt/s
+        while the link counters barely moved.
+        """
+        if not hasattr(match, "to_jsondict"):
+            return {}
+        body = match.to_jsondict().get("OFPMatch", {})
+        raw = body.get("oxm_fields") if isinstance(body, dict) else None
+        if not raw:
+            # An empty `oxm_fields` is a wildcard match, not a flat mapping
+            # that happens to carry metadata keys -- returning the envelope
+            # here made `if not fields: return True` unreachable and turned a
+            # wildcard flow into one that matched nothing.
+            return {}
+        out: dict[str, Any] = {}
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            tlv = entry.get("OXMTlv")
+            if isinstance(tlv, dict) and "field" in tlv:
+                out[tlv["field"]] = tlv.get("value")
+        return out
+
     def matches(self, in_port: int | None, frame: bytes) -> bool:
-        m = self.match
-        fields = m.to_jsondict().get("OFPMatch", {}) if hasattr(m, "to_jsondict") else {}
+        fields = self._flat_fields(self.match)
         if not fields:
             return True  # wildcard flow matches everything
         if "in_port" in fields and in_port is not None and fields["in_port"] != in_port:
@@ -379,11 +415,20 @@ def _parse_flow_mod(body: bytes) -> Any:
         ofp.OFP_FLOW_MOD_PACK_STR0, body, base)
     offset = base + struct.calcsize(ofp.OFP_FLOW_MOD_PACK_STR0)
 
-    match_len = struct.unpack_from("!H", body, offset)[0]
+    # An OFPMatch on the wire is `type(2) length(2) fields...`, and `length`
+    # counts the whole match *including* those 4 header bytes. Reading the
+    # length from `offset` picked up the match *type* (always OFPMT_OXM = 1)
+    # instead, so every instruction offset was wrong and the action list came
+    # back empty. A flow with no actions matches but forwards nowhere, so it
+    # fell through to the PACKET_IN branch -- which is why the flow table filled
+    # with entries that were installed, matched, and still never forwarded.
+    match_type, match_len = struct.unpack_from("!HH", body, offset)
+    if match_type not in (ofp.OFPMT_STANDARD, ofp.OFPMT_OXM):
+        raise ValueError(f"unsupported OFPMatch type {match_type}")
     # Decode with Ryu's own OFPMatch parser so a stored match keeps the
     # `to_jsondict()` shape the flow matcher and delete logic expect.
     match = ofp_parser.OFPMatch.parser(body, offset)
-    offset += 8 + match_len
+    offset += match_len
 
     return _SimpleNamespace(
         cookie=cookie, cookie_mask=cookie_mask, table_id=table_id,
@@ -1276,8 +1321,8 @@ def _matches_flags(flow_mod: Any, flow: FlowEntry) -> bool:
 
 def _match_covers(target: Any, existing: Any) -> bool:
     """True when `target` is a wildcard-ish subset of `existing` (delete rule)."""
-    t = target.to_jsondict().get("OFPMatch", {}) if target is not None else {}
-    e = existing.to_jsondict().get("OFPMatch", {}) if existing is not None else {}
+    t = FlowEntry._flat_fields(target)
+    e = FlowEntry._flat_fields(existing)
     if not t:
         return True
     for k, v in t.items():
@@ -1288,11 +1333,9 @@ def _match_covers(target: Any, existing: Any) -> bool:
 
 def stricter_match_equal(a: Any, b: Any) -> bool:
     try:
-        ja = a.to_jsondict().get("OFPMatch", {})
-        jb = b.to_jsondict().get("OFPMatch", {})
+        return FlowEntry._flat_fields(a) == FlowEntry._flat_fields(b)
     except Exception:
         return False
-    return ja == jb
 
 
 # ---------------------------------------------------------------------------

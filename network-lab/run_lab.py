@@ -318,64 +318,128 @@ class Lab:
                 return {}
             switches = payload.get("switches", {})
             raw = switches.get(str(dpid)) or switches.get(dpid) or {}
-            return {int(port): counters for port, counters in raw.items()}
+            # The controller serves a *cached* copy, refreshed on its own poll
+            # interval. Stamp every counter with when that cache was taken so
+            # the sampler can wait for a genuinely newer reading instead of
+            # differencing a snapshot against itself and reporting 0%.
+            captured_at = payload.get("captured_at")
+            out: dict[int, dict[str, int]] = {}
+            for port, counters in raw.items():
+                merged = dict(counters)
+                if isinstance(captured_at, (int, float)):
+                    merged["captured_at"] = float(captured_at)
+                out[int(port)] = merged
+            return out
 
         return read_user
 
     # ------------------------------------------------------------------
     # scenarios
     # ------------------------------------------------------------------
+    # Congestion runs on a fixed UDP port, chosen to avoid anything the lab or
+    # the host might already be listening on.
+    TRAFFIC_PORT = 5201
+
     def start_congestion(self, link_id: str = "s2-s4", rate_mbps: float = 400.0,
                          duration_seconds: float = 0.0) -> dict[str, Any]:
-        """Drive iperf3 background traffic across `link_id`'s bottleneck link.
+        """Put real UDP traffic on `link_id`'s bottleneck link.
 
         The generator runs from h2 (attached to s1) to h3 (attached to s4), so
         its traffic is forced over the s2-s4 link by the shortest path.
+
+        The traffic itself comes from `network-lab/traffic_gen.py`, not from
+        iperf3. The lab runs in a user namespace where nothing can be
+        installed, and an absent iperf3 previously produced a scenario that
+        reported success while generating no packets at all -- every link read
+        0% and the flow latencies never moved. The generator here has no
+        dependency beyond the standard library, and its exit status is checked
+        before the scenario is recorded, so a failure is reported as a failure.
         """
         if link_id not in TOPO.SWITCH_LINKS:
             raise ValueError(f"unknown link {link_id}")
         if not TOPO.SWITCH_LINKS[link_id]["congestible"]:
             LOG.warning("link %s is not marked congestible; scenario still runs", link_id)
 
+        self.stop_congestion()
+
         try:
             h3 = self.net.get("h3")
             h2 = self.net.get("h2")
             dst_ip = str(TOPO.HOST_IP["h3"])
-            src_ip = str(TOPO.HOST_IP["h2"])
+            script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "traffic_gen.py")
+            if not os.path.exists(script):
+                raise FileNotFoundError(f"traffic generator missing: {script}")
 
-            srv = h3.popen(
-                f"iperf3 -s -B {src_ip if False else dst_ip} -D", shell=True)
+            common = [sys.executable, script, "--port", str(self.TRAFFIC_PORT)]
+            sink = h3.popen(common + ["sink"], stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT)
+            # Give the listener a moment to bind before the first datagram,
+            # otherwise a short scenario loses its opening packets.
+            time.sleep(0.3)
+            if sink.poll() is not None:
+                detail = (sink.stdout.read() or b"").decode(errors="replace").strip()
+                sink.terminate()
+                return {"ok": False, "link_id": link_id,
+                        "error": f"traffic sink exited immediately: {detail}"}
+
             generator = h2.popen(
-                f"iperf3 -c {dst_ip} -u -b {rate_mbps}M -t "
-                f"{int(duration_seconds) if duration_seconds else 0} "
-                f"-p 5201 > /tmp/iperf3-{link_id}.log 2>&1",
-                shell=True)
-            self.traffic_processes.extend([srv, generator])
+                common + ["source", "--dst", dst_ip,
+                          "--rate-mbps", str(rate_mbps),
+                          "--duration", str(float(duration_seconds))],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            self.traffic_processes.extend([sink, generator])
         except Exception as exc:
-            return {"ok": False, "error": f"failed to start iperf3: {exc}",
+            self.stop_congestion()
+            return {"ok": False, "error": f"failed to start traffic generator: {exc}",
                     "link_id": link_id}
+
+        # A source that dies in the first moments means no congestion at all,
+        # so do not record the scenario until it has proven it is still running.
+        time.sleep(0.5)
+        if generator.poll() is not None:
+            detail = (generator.stdout.read() or b"").decode(errors="replace").strip()
+            self.stop_congestion()
+            return {"ok": False, "link_id": link_id,
+                    "error": f"traffic generator exited immediately: {detail}"}
 
         with self._lock:
             self.congestion[link_id] = {
                 "rate_mbps": rate_mbps,
                 "duration_seconds": duration_seconds,
                 "started_at": time.time(),
-                "tool": "iperf3",
+                "tool": "udp-gen",
             }
         LOG.info("congestion started on %s at %s Mbps", link_id, rate_mbps)
         return {"ok": True, "link_id": link_id, "rate_mbps": rate_mbps,
-                "duration_seconds": duration_seconds, "tool": "iperf3"}
+                "duration_seconds": duration_seconds, "tool": "udp-gen"}
 
     def stop_congestion(self, link_id: str | None = None) -> dict[str, Any]:
         stopped: list[str] = []
-        for h in self.net.hosts:
-            h.cmd("pkill -f iperf3 2>/dev/null || true")
+        for proc in self.traffic_processes:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        # Reap without blocking: the sink and the source are both simple
+        # loops, so a short grace period is enough. `Node.cmd` is deliberately
+        # not used here -- it drives an interactive pty and raises a bare
+        # AssertionError when another command is already in flight on the host.
+        deadline = time.time() + 2.0
+        for proc in self.traffic_processes:
+            try:
+                proc.wait(timeout=max(0.05, deadline - time.time()))
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        self.traffic_processes = []
         with self._lock:
             keys = [link_id] if link_id else list(self.congestion)
             for key in keys:
                 if self.congestion.pop(key, None) is not None:
                     stopped.append(key)
-        self.traffic_processes = []
         LOG.info("congestion stopped on %s", stopped or "(none)")
         return {"ok": True, "stopped": stopped}
 
@@ -461,6 +525,11 @@ class Lab:
                 flow["path"] = self.current_path(key)
         snap["switch_backend"] = self.switch_backend
         snap["active_scenario"] = "congestion" if congested else None
+        # Publish the congested set here too. It used to appear only on
+        # /v1/status, so every snapshot consumer -- the agent's path planner
+        # included -- read it as empty and treated a congested link as an
+        # ordinary one.
+        snap["congested_links"] = congested
         snap["controller_reachable"] = self._connected_switches() > 0
         self.last_snapshot = snap
         return snap
@@ -576,12 +645,15 @@ def build_handler(lab: Lab, token: str):
             LOG.debug("http: " + fmt, *args)
         # -- plumbing ------------------------------------------------
         def _send(self, code: int, payload: Any) -> None:
-            body = json.dumps(payload, default=str).encode()
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                body = json.dumps(payload, default=str).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                LOG.debug("client disconnected before response was fully written")
 
         def _authorised(self) -> bool:
             if not token:

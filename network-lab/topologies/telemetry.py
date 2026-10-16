@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 import statistics
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -144,6 +145,8 @@ class TelemetryCollector:
         # counter_reader(dpid) -> {port_no: counters}; injected so the user
         # switch and the OVS switch can provide counters their own way.
         self.counter_reader = counter_reader
+        # Guards `Node.cmd` use across concurrent snapshots. See `snapshot`.
+        self._collect_lock = threading.Lock()
         self._port_map: dict[tuple[int, int], tuple[str, float]] = {}
         for link_id, spec in link_specs.items():
             ports = link_ports.get(link_id)
@@ -174,9 +177,19 @@ class TelemetryCollector:
         return parse_ping_output(out, src_host, dst_host)
 
     # -- link utilisation ---------------------------------------------------
-    def _read_counters(self) -> dict[tuple[int, int], dict[str, int]]:
-        """One pass of switch port counters keyed by (dpid, port_no)."""
+    def _read_counters(self) -> tuple[dict[tuple[int, int], dict[str, int]], float | None]:
+        """One pass of switch port counters keyed by (dpid, port_no).
+
+        Returns the counters plus the timestamp at which the source captured
+        them, when the source reports one. That timestamp matters: the
+        user-space controller caches port counters and only refreshes them on
+        its own poll interval, so two reads a second apart can return the same
+        snapshot. Comparing it against itself yields a delta of zero, which is
+        indistinguishable from an idle link. Carrying the capture time lets
+        the caller tell "no traffic" from "not refreshed yet".
+        """
         out: dict[tuple[int, int], dict[str, int]] = {}
+        captured_at: float | None = None
         for sw in getattr(self.net, "switches", []):
             name = sw.name
             if not name.startswith("s"):
@@ -190,6 +203,9 @@ class TelemetryCollector:
                 if counters:
                     for port_no, vals in counters.items():
                         out[(dpid, int(port_no))] = vals
+                        stamp = vals.get("captured_at")
+                        if isinstance(stamp, (int, float)):
+                            captured_at = max(captured_at or 0.0, float(stamp))
                 continue
             # Default path: ask OVS directly.
             try:
@@ -198,21 +214,45 @@ class TelemetryCollector:
                 continue
             for port_no, vals in parse_ovs_dump_ports(out_text).items():
                 out[(dpid, port_no)] = vals
-        return out
+        return out, captured_at
 
     def sample_utilization(self, interval: float = 1.0) -> dict[str, float]:
-        """Sample counters twice and convert byte deltas to utilisation %."""
+        """Sample counters twice and convert byte deltas to utilisation %.
+
+        The window is stretched until the source actually reports a *new*
+        capture, because a delta between two identical cached snapshots is a
+        measurement artefact, not an idle link. Elapsed time is taken from the
+        source's own capture timestamps when it provides them, since those are
+        what the byte counters were actually measured over; local wall-clock is
+        only the fallback.
+        """
         if interval <= 0:
             interval = 1.0
-        first = self._read_counters()
-        t0 = time.time()
-        time.sleep(interval)
-        second = self._read_counters()
-        t1 = time.time()
-        if not first or not second:
+
+        first, first_at = self._read_counters()
+        if not first:
             return {}
 
-        elapsed = max(t1 - t0, 0.001)
+        deadline = time.monotonic() + max(interval * 6.0, 12.0)
+        second, second_at = first, first_at
+        while time.monotonic() < deadline:
+            time.sleep(interval)
+            second, second_at = self._read_counters()
+            if not second:
+                continue
+            # Either the source timestamps its snapshots and one advanced, or
+            # it does not and we have no way to tell -- take the second read.
+            if first_at is None or second_at is None or second_at > first_at:
+                break
+        if not second:
+            return {}
+
+        elapsed = max(
+            (second_at - first_at)
+            if (first_at is not None and second_at is not None)
+            else interval,
+            0.001,
+        )
         result: dict[str, float] = {}
         for (dpid, port_no), (link_id, cap_mbps) in self._port_map.items():
             a = first.get((dpid, port_no))
@@ -257,13 +297,60 @@ class TelemetryCollector:
     def snapshot(self, *, latency_count: int = 10,
                  flow_pairs: tuple[tuple[str, str], ...] = (("h1", "h4"), ("h3", "h4")),
                  util_interval: float = 1.0) -> dict[str, Any]:
-        """One coherent telemetry snapshot: flows + link utilisation."""
+        """One coherent telemetry snapshot: flows + link utilisation.
+
+        Concurrent callers queue rather than measure at the same time:
+        `measure_flow` drives each host's interactive pty, and Mininet guards
+        that with a bare `assert self.shell and not self.waiting`. Overlapping
+        requests therefore fail with an empty `AssertionError`, which the
+        dashboard renders as a flow with null latency -- indistinguishable from
+        a real measurement failure.
+
+        Waiting is the point. Handing back a cached snapshot looked cheaper,
+        but it silently broke every caller that compares two measurements:
+        the dashboard polls every 3s while a collection takes ~2s, so the cache
+        was contended essentially always and the lab stopped re-measuring
+        altogether. The agent's before/after pair then came back byte-identical
+        and reported `recovery_failed` on a change it had never observed. Each
+        caller must get its own measurement for a comparison to mean anything.
+        """
+        self._collect_lock.acquire()
+        try:
+            snapshot = self._collect(latency_count=latency_count,
+                                     flow_pairs=flow_pairs,
+                                     util_interval=util_interval)
+            return snapshot
+        finally:
+            self._collect_lock.release()
+
+    def _collect(self, *, latency_count: int,
+                 flow_pairs: tuple[tuple[str, str], ...],
+                 util_interval: float) -> dict[str, Any]:
+        """Do the actual measurement work. See {@link snapshot} for why this
+        is split out."""
+        # Each flow is measured on a different source host, and utilisation is
+        # read from the switch counters rather than a host pty, so all three
+        # collections are independent and run concurrently. Measuring them in
+        # sequence took ~5.5s per snapshot, which is longer than the
+        # dashboard's 3s poll and guaranteed the overlap described above.
         flows: dict[str, dict[str, Any]] = {}
-        for src, dst in flow_pairs:
+        util: dict[str, float] = {}
+
+        def _flow(src: str, dst: str) -> None:
             flows[f"{src}->{dst}"] = self.measure_flow(
                 src, dst, count=latency_count).to_dict()
 
-        util = self.sample_utilization(interval=util_interval)
+        def _util() -> None:
+            util.update(self.sample_utilization(interval=util_interval))
+
+        workers = [threading.Thread(target=_flow, args=pair, daemon=True)
+                   for pair in flow_pairs]
+        workers.append(threading.Thread(target=_util, daemon=True))
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+
         links: dict[str, dict[str, Any]] = {}
         for link_id, spec in self.link_specs.items():
             cap = float(spec.get("capacity_mbps", 1000))

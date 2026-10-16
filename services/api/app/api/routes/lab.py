@@ -8,8 +8,10 @@ network truth of its own. When the lab is unreachable the routes say so with a
 from __future__ import annotations
 
 import logging
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Body, HTTPException, status
+from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
 from app.services.lab_bridge import LabBridgeClient, LabUnavailable
@@ -76,12 +78,27 @@ def reset_lab() -> dict:
         raise _or_503(exc, "reset") from exc
 
 
+class CongestionRequest(BaseModel):
+    """Body of a congestion request.
+
+    The dashboard POSTs these as JSON. They used to be declared as bare query
+    parameters, which FastAPI reads from the URL only -- so a JSON body was
+    accepted, silently ignored, and every request fell back to the 400 Mbps
+    default. That made the scenario untunable from the UI.
+    """
+
+    link_id: str = Field(default="s2-s4")
+    rate_mbps: float = Field(default=400.0, gt=0)
+    duration_seconds: float = Field(default=0.0, ge=0)
+
+
 @router.post("/scenarios/congestion")
-def start_congestion(link_id: str = "s2-s4", rate_mbps: float = 400.0,
-                     duration_seconds: float = 0.0) -> dict:
+def start_congestion(request: Annotated[CongestionRequest | None, Body()] = None) -> dict:
     """Start a congestion scenario on a specific link."""
+    body = request or CongestionRequest()
     try:
-        return _client().start_congestion(link_id, rate_mbps, duration_seconds)
+        return _client().start_congestion(
+            body.link_id, body.rate_mbps, body.duration_seconds)
     except LabUnavailable as exc:
         raise _or_503(exc, "start congestion") from exc
 

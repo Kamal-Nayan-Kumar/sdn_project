@@ -123,6 +123,13 @@ class FlowTelemetry(StrictModel):
     path: list[str] = Field(default_factory=list)
     latency_ms: float | None = Field(default=None, ge=-1, le=10_000)
     jitter_ms: float | None = None
+    # The lab measures each flow with a multi-packet ping and reports the whole
+    # distribution, not just its mean. Carrying `samples` and the observed peak
+    # lets a latency SLO be judged on the behaviour it is meant to catch: a
+    # flow whose mean sits under the target while individual packets breach it.
+    samples: list[float] = Field(default_factory=list)
+    min_latency_ms: float | None = None
+    max_latency_ms: float | None = Field(default=None, ge=-1, le=10_000)
     packet_loss_pct: float | None = Field(default=None, ge=0, le=100)
     throughput_mbps: float | None = None
     measured_at: datetime = Field(default_factory=utcnow)
@@ -196,8 +203,21 @@ class PathCandidate(StrictModel):
 
     @property
     def score(self) -> float:
-        """Lower is better. Estimated end-to-end delay dominates."""
-        return self.total_delay_ms
+        """Lower is better.
+
+        Routing a path that still crosses a congested link is not a recovery,
+        so that is disqualifying rather than merely expensive. Ranking on
+        delay alone picked a 18 ms detour through the congested s2-s4 link over
+        the 20 ms path that avoided it entirely -- the agent "repaired" the
+        flow by making it worse, then reported `recovery_failed` on a change
+        that had never addressed the bottleneck.
+
+        Among paths that avoid congestion, delay decides; utilisation only
+        breaks ties between otherwise equal-delay options.
+        """
+        if not self.avoids_congestion:
+            return float("inf")
+        return self.total_delay_ms + self.max_utilization_pct / 100.0
 
 
 class PathEvaluationResult(StrictModel):

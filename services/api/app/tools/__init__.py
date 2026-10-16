@@ -231,6 +231,10 @@ def _get_topology(_p: GetTopologyInput, client: LabBridgeClient) -> dict[str, An
 
 def _parse_flow(raw_flow: dict[str, Any], src: str, dst: str,
                 kind: FlowKind) -> FlowTelemetry:
+    def _num(key: str) -> float | None:
+        value = raw_flow.get(key)
+        return float(value) if isinstance(value, (int, float)) else None
+
     return FlowTelemetry(
         flow_id=raw_flow.get("flow_id") or f"{src}->{dst}",
         src_host=src, dst_host=dst, kind=kind,
@@ -238,7 +242,15 @@ def _parse_flow(raw_flow: dict[str, Any], src: str, dst: str,
         latency_ms=float(raw_flow["latency_ms"])
         if raw_flow.get("latency_ms") is not None else -1.0,
         packet_loss_pct=float(raw_flow.get("packet_loss_pct") or 0.0),
-        jitter_ms=raw_flow.get("jitter_ms"),
+        jitter_ms=_num("jitter_ms"),
+        # Carry the per-packet distribution through. The lab measures each flow
+        # with a multi-packet ping; keeping only the mean made a latency SLO
+        # unfalsifiable against a flow whose mean sits under target while its
+        # packets do not.
+        samples=[float(s) for s in (raw_flow.get("samples") or [])
+                 if isinstance(s, (int, float))],
+        min_latency_ms=_num("min_latency_ms"),
+        max_latency_ms=_num("max_latency_ms"),
         throughput_mbps=raw_flow.get("throughput_mbps"),
         measured_at=datetime.fromtimestamp(raw_flow.get("measured_at", 0), tz=timezone.utc)
         if raw_flow.get("measured_at") else _now(),
@@ -305,22 +317,33 @@ def _evaluate_paths(p: EvaluatePathsInput,
     snap_raw = client.snapshot()
     snap_links = _links_of(snap_raw)
     util = {l["link_id"]: float(l.get("utilization_pct", 0.0)) for l in snap_links}
+    # Union the explicit list with any link the lab reports as not up. A
+    # congested link is exactly the case where the two can disagree, and
+    # trusting only the explicit list means a link flagged `down` is still
+    # scored as a healthy choice.
     congested = set(snap_raw.get("congested_links", []))
+    congested.update(
+        l["link_id"] for l in snap_links
+        if l.get("status") in ("down", "degraded")
+    )
     avoid = set(p.avoid_links) | congested
 
     candidates: list[PathCandidate] = []
     for rp in raw_paths:
         link_ids = rp.get("links", [])
-        links = [l for l in link_ids if l not in avoid]
         delays = {l["link_id"]: float(l.get("delay_ms", 0.0)) for l in snap_links}
-        total_delay = sum(delays.get(l, 0.0) for l in links)
+        # Delay is a property of the whole path. Summing only the links that
+        # were *not* filtered out made a path cheaper the more of it ran over a
+        # link we had already decided to avoid -- so the worst candidate scored
+        # best.
+        total_delay = sum(delays.get(l, 0.0) for l in link_ids)
         max_util = max((util.get(l, 0.0) for l in link_ids), default=0.0)
         candidates.append(PathCandidate(
             nodes=rp.get("nodes", []), links=link_ids,
             total_delay_ms=total_delay,
             min_capacity_mbps=rp.get("min_capacity_mbps"),
             max_utilization_pct=round(max_util, 3),
-            avoids_congestion=not (set(link_ids) & congested),
+            avoids_congestion=not (set(link_ids) & avoid),
             avoids_protected=True,
         ))
     candidates.sort(key=lambda c: c.score)

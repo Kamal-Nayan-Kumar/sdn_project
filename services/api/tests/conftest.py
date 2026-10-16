@@ -130,13 +130,21 @@ def make_flows(
     dst: str = "h4",
     path: list[str] | None = None,
     age_seconds: float = 0.0,
+    samples: list[float] | None = None,
+    max_latency_ms: float | None = None,
 ) -> FlowTelemetry:
-    """A single flow measurement."""
+    """A single flow measurement.
+
+    `samples` and `max_latency_ms` default to empty/None so tests that only
+    care about the mean behave exactly as before.
+    """
     return FlowTelemetry(
         flow_id=flow_id, src_host=src, dst_host=dst, kind=FlowKind.VIDEO,
         path=path if path is not None else ["h1", "s1", "s2", "s4", "h4"],
         latency_ms=latency_ms,
         packet_loss_pct=packet_loss_pct,
+        samples=list(samples) if samples else [],
+        max_latency_ms=max_latency_ms,
         measured_at=_now(-age_seconds),
     )
 

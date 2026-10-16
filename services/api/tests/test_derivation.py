@@ -10,6 +10,7 @@ from __future__ import annotations
 from app.agents.workflow import _is_violated, parse_intent_deterministically
 from app.safety.gates import _links_along
 from app.schemas.domain import FlowKind, FlowTelemetry
+from app.schemas.domain import PathCandidate
 from app.tools import _links_of, _pick
 
 from .conftest import make_flows, make_intent, make_snapshot
@@ -114,6 +115,31 @@ class TestIsViolated:
         make an unmeasured network look healthy."""
         assert _is_violated(None, make_intent()) is None
 
+    def test_samples_over_target_are_violated_despite_low_mean(self):
+        """The mean alone hid the violation.
+
+        A flow oscillating around its target averaged 41.8 ms against a 50 ms
+        limit, so a mean-only check reported `intent_satisfied` and proposed no
+        change -- while the individual samples ranged up to 56 ms.
+        """
+        flow = make_flows(
+            latency_ms=41.8, packet_loss_pct=0.0, max_latency_ms=56.1,
+            samples=[53.6, 56.1, 42.0, 41.9, 44.9, 42.3, 48.9, 52.5, 40.7])
+        assert _is_violated(flow, make_intent(max_latency_ms=50.0)) is True
+
+    def test_isolated_slow_sample_is_not_a_violation(self):
+        """One slow packet out of ten is scheduler noise, not an SLO breach."""
+        flow = make_flows(
+            latency_ms=30.0, packet_loss_pct=0.0, max_latency_ms=52.0,
+            samples=[28.0, 29.1, 30.2, 31.0, 29.8, 28.4, 30.1, 52.0, 29.0, 30.5])
+        assert _is_violated(flow, make_intent(max_latency_ms=50.0)) is False
+
+    def test_peak_is_used_when_no_samples_are_reported(self):
+        """`max_latency_ms` is the same signal when samples are absent."""
+        flow = make_flows(latency_ms=45.0, packet_loss_pct=0.0,
+                          max_latency_ms=70.0, samples=[])
+        assert _is_violated(flow, make_intent(max_latency_ms=50.0)) is True
+
 
 # ---------------------------------------------------------------------------
 # Deterministic intent parsing
@@ -164,3 +190,49 @@ class TestDeterministicIntentParsing:
         than raise."""
         intent = parse_intent_deterministically("h2 to h4")
         assert intent.src_host == "h2" and intent.dst_host == "h4"
+
+
+# ---------------------------------------------------------------------------
+# Ranking candidate paths
+# ---------------------------------------------------------------------------
+
+
+class TestPathCandidateScore:
+    """Ranking decides which path the agent actually installs.
+
+    Each test below came out of a reroute that either did the wrong thing or
+    reported success while having changed nothing.
+    """
+
+    def test_congestion_free_path_outranks_a_faster_congested_one(self):
+        """The fix for the reroute that made the flow worse.
+
+        Ranked on delay alone, an 18 ms detour through the congested s2-s4 link
+        beat the 20 ms path that avoided it entirely, so the agent "repaired"
+        a congested flow by routing straight back through the bottleneck.
+        """
+        congested = PathCandidate(
+            nodes=["h1", "s1", "s3", "s2", "s4", "h4"],
+            links=["s1-s3", "s2-s3", "s2-s4"], total_delay_ms=18.0,
+            avoids_congestion=False)
+        clean = PathCandidate(
+            nodes=["h1", "s1", "s3", "s4", "h4"],
+            links=["s1-s3", "s3-s4"], total_delay_ms=20.0,
+            avoids_congestion=True)
+        assert sorted([congested, clean], key=lambda c: c.score)[0] is clean
+
+    def test_a_congested_path_never_wins_however_low_its_delay(self):
+        """Even a path that is strictly faster must lose to a clean one."""
+        congested = PathCandidate(nodes=["h1", "s2", "s4"], links=["s2-s4"],
+                                 total_delay_ms=1.0, avoids_congestion=False)
+        clean = PathCandidate(nodes=["h1", "s1", "s3", "s4"], links=["s3-s4"],
+                              total_delay_ms=99.0, avoids_congestion=True)
+        assert min(congested.score, clean.score) == clean.score
+
+    def test_utilisation_breaks_ties_between_equal_delay_paths(self):
+        """Two clean paths of equal delay: prefer the emptier one."""
+        busy = PathCandidate(nodes=["h1", "s1"], links=["x"], total_delay_ms=20.0,
+                             max_utilization_pct=90.0, avoids_congestion=True)
+        idle = PathCandidate(nodes=["h1", "s2"], links=["y"], total_delay_ms=20.0,
+                             max_utilization_pct=1.0, avoids_congestion=True)
+        assert min(busy.score, idle.score) == idle.score
