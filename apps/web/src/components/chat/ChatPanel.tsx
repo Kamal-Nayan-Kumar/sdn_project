@@ -129,7 +129,7 @@ export function ChatPanel({
       <div className="hairline" />
 
       <form
-        className="flex items-center gap-1.5 p-2"
+        className="flex items-center gap-2 p-2.5 bg-[var(--surface)] border-t border-[var(--line)]"
         onSubmit={(event) => {
           event.preventDefault();
           submit();
@@ -142,11 +142,11 @@ export function ChatPanel({
           placeholder={disabled ? "Backend offline — messages disabled" : "Ask about the network…"}
           disabled={disabled || busy}
           aria-label="Message the agent"
-          className="h-7 min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--line-strong)] bg-[var(--surface)] px-2 text-[12.5px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-4)] disabled:cursor-not-allowed disabled:bg-[var(--sunken)] disabled:text-[var(--ink-4)]"
+          className="h-8.5 min-w-0 flex-1 rounded-md border border-[var(--line-strong)] bg-[var(--surface)] px-2.5 text-[12.5px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-4)] focus:border-[var(--brand)] disabled:cursor-not-allowed disabled:bg-[var(--sunken)] disabled:text-[var(--ink-4)]"
         />
         <button
           type="submit"
-          className="btn btn--primary"
+          className="btn btn--primary h-8.5 px-3 rounded-md"
           disabled={!canSend}
           title="Send the message to the agent"
         >

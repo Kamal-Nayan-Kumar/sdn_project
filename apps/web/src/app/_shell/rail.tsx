@@ -44,7 +44,7 @@ export function Rail() {
   const labDown = connection !== "connected";
 
   return (
-    <nav className="app-rail flex flex-col justify-between py-3" aria-label="Console">
+    <nav className="app-rail flex flex-col justify-between py-3 pb-8" aria-label="Console">
       <div>
         <ul className="flex list-none flex-col gap-1 p-0 m-0">
           {CONSOLE_SECTIONS.map(({ id, label, icon: Icon }, index) => (

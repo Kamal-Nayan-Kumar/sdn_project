@@ -137,11 +137,17 @@ export function LabDataProvider({ children }: { children: ReactNode }) {
 
     const poll = async () => {
       try {
-        const next = await getJson<NetworkSnapshot>(SNAPSHOT_PATH, controller.signal);
+        const raw = await getJson<Record<string, unknown>>(SNAPSHOT_PATH, controller.signal);
         if (stopped) return;
+        const measured = raw?.measured_at;
+        const capturedAt = (typeof raw?.captured_at === "string" ? raw.captured_at : null)
+          || (typeof measured === "number" ? new Date(measured * 1000).toISOString() : new Date().toISOString());
+        const next = {
+          ...raw,
+          captured_at: capturedAt,
+        } as unknown as NetworkSnapshot;
         setSnapshot(next);
-        const timestamp = next.captured_at || (next as any).measured_at;
-        setSnapshotDetail(timestamp ? `captured ${timestamp}` : "telemetry updated");
+        setSnapshotDetail(`captured ${new Date(capturedAt).toLocaleTimeString()}`);
       } catch (error) {
         if (stopped) return;
         const name = (error as Error)?.name;

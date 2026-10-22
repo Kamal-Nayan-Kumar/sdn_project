@@ -49,10 +49,10 @@ export default function DashboardPage() {
     ?? null;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2.5 p-2.5">
+    <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 pb-12">
       <MetricStrip snapshot={snapshot} intent={intent} verification={run?.verification ?? null} />
 
-      <div id="region-topology" className="flex min-h-[340px] flex-1 flex-col">
+      <div id="region-topology" className="flex flex-col">
         <TopologyCanvas
           snapshot={snapshot}
           flowPaths={undefined}
@@ -61,11 +61,11 @@ export default function DashboardPage() {
           suspectLinks={undefined}
           congestedLinks={snapshot?.congested_links}
           selectedFlowId={null}
-          height={420}
+          height={270}
         />
       </div>
 
-      <div className="grid gap-2.5 lg:grid-cols-2">
+      <div className="grid gap-3 lg:grid-cols-2">
         <LinkMetricsPanel snapshot={snapshot} />
         <E2EMetricsChart />
       </div>

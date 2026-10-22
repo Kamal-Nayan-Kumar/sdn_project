@@ -1,8 +1,9 @@
 /** Small formatting helpers. The UI formats measured values; it never invents them. */
 
-export function formatMs(value: number | null | undefined, digits = 0): string {
+export function formatMs(value: number | null | undefined, digits?: number): string {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
-  return `${value.toFixed(digits)} ms`;
+  const d = digits !== undefined ? digits : value > 0 && value < 1 ? 1 : 0;
+  return `${value.toFixed(d)} ms`;
 }
 
 export function formatPct(value: number | null | undefined, digits = 0): string {

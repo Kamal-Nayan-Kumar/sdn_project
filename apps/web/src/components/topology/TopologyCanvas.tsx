@@ -327,18 +327,31 @@ export function TopologyCanvas({
                   {isCongested ? " · congested" : ""}
                 </title>
               </line>
-              {/* Utilisation label on fabric links, offset above the line */}
+              {/* Utilisation label on fabric links */}
               {link.kind === "fabric" && measured ? (
-                <text
-                  x={link.midX}
-                  y={link.midY - 6}
-                  textAnchor="middle"
-                  fontSize={10}
-                  className="mono"
-                  style={{ fill: "var(--ink-3)" }}
-                >
-                  {measured.utilization_pct.toFixed(0)}%
-                </text>
+                <g transform={`translate(${link.midX}, ${link.midY})`}>
+                  <rect
+                    x="-14"
+                    y="-8"
+                    width="28"
+                    height="15"
+                    rx="3"
+                    style={{ fill: "var(--surface)", stroke: "var(--line)", strokeWidth: 0.8 }}
+                  />
+                  <text
+                    x="0"
+                    y="3"
+                    textAnchor="middle"
+                    fontSize={9.5}
+                    className="mono"
+                    style={{
+                      fill: isCongested ? "var(--red-state)" : "var(--ink-2)",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {measured.utilization_pct.toFixed(0)}%
+                  </text>
+                </g>
               ) : null}
               {isSelected ? (
                 <circle cx={link.midX} cy={link.midY} r={2.5} style={{ fill: "var(--blue)" }} aria-hidden="true" />
@@ -400,7 +413,7 @@ export function TopologyCanvas({
           const isController = node.kind === "controller";
           const nodeCongested = congested.has(node.id);
           const subtitle = isSwitch
-            ? node.role || "switch"
+            ? ""
             : node.ip || node.role || "host";
           return (
             <g
@@ -438,7 +451,7 @@ export function TopologyCanvas({
                     textAnchor="middle"
                     fontSize={12}
                     className="mono"
-                    style={{ fill: "var(--ink)", fontWeight: 500 }}
+                    style={{ fill: "var(--ink)", fontWeight: 600 }}
                   >
                     {node.label}
                   </text>

@@ -36,9 +36,20 @@ export function E2EMetricsChart() {
   const currentLoss = Math.min(10, Math.max(0, metrics.packetLoss));
 
   // Map to SVG coordinates: viewBox 0 0 400 140
-  // Y: 0ms -> 138, 200ms -> 10
-  const latencyY = 138 - ((currentLatency / 200) * 128);
-  const lossY = 138 - ((currentLoss / 5) * 120);
+  // Y: 0ms -> 134, 200ms -> 16
+  const rawLatencyY = 134 - ((currentLatency / 200) * 118);
+  const rawLossY = 134 - ((currentLoss / 5) * 110);
+  const latencyY = Math.min(126, Math.max(16, rawLatencyY));
+  const lossY = Math.min(133, Math.max(18, rawLossY));
+
+  // Latency trend curve with guaranteed clamped bounds (never dips into negative space)
+  const y0 = Math.min(126, Math.max(20, latencyY + 6));
+  const y1 = Math.min(126, Math.max(20, latencyY + 10));
+  const y2 = Math.min(126, Math.max(20, latencyY - 8));
+  const y3 = Math.min(126, Math.max(20, latencyY + 2));
+  const y4 = latencyY;
+  const latencyPath = `M 0 ${y0} C 50 ${y0}, 50 ${y1}, 100 ${y1} C 150 ${y1}, 150 ${y2}, 200 ${y2} C 250 ${y2}, 250 ${y3}, 300 ${y3} C 350 ${y3}, 350 ${y4}, 400 ${y4}`;
+  const lossPath = `M 0 133 L 100 133 L 200 132 L 300 ${lossY} L 400 ${lossY}`;
 
   return (
     <section className="panel" id="region-chart" aria-label="End-to-End Metrics">
@@ -56,9 +67,9 @@ export function E2EMetricsChart() {
       </header>
 
       <div className="p-3">
-        <div className="h-44 w-full relative flex flex-col justify-between">
+        <div className="h-[148px] w-full relative flex flex-col justify-between">
           {/* Y-axis grid labels */}
-          <div className="absolute left-0 top-0 bottom-6 w-8 flex flex-col justify-between text-[10px] text-[var(--ink-4)] font-mono pointer-events-none">
+          <div className="absolute left-0 top-0 bottom-5 w-8 flex flex-col justify-between text-[10px] text-[var(--ink-4)] font-mono pointer-events-none">
             <span>200</span>
             <span>150</span>
             <span>100</span>
@@ -67,18 +78,18 @@ export function E2EMetricsChart() {
           </div>
 
           {/* SVG Trend Lines */}
-          <div className="ml-9 h-38">
+          <div className="ml-9 h-[116px]">
             <svg width="100%" height="100%" viewBox="0 0 400 140" preserveAspectRatio="none" className="overflow-visible">
               {/* Subtle horizontal grid lines */}
-              <line x1="0" y1="10" x2="400" y2="10" stroke="var(--line)" strokeDasharray="3 3" />
-              <line x1="0" y1="42" x2="400" y2="42" stroke="var(--line)" strokeDasharray="3 3" />
-              <line x1="0" y1="74" x2="400" y2="74" stroke="var(--line)" strokeDasharray="3 3" />
-              <line x1="0" y1="106" x2="400" y2="106" stroke="var(--line)" strokeDasharray="3 3" />
-              <line x1="0" y1="138" x2="400" y2="138" stroke="var(--line)" />
+              <line x1="0" y1="16" x2="400" y2="16" stroke="var(--line)" strokeDasharray="3 3" />
+              <line x1="0" y1="45" x2="400" y2="45" stroke="var(--line)" strokeDasharray="3 3" />
+              <line x1="0" y1="75" x2="400" y2="75" stroke="var(--line)" strokeDasharray="3 3" />
+              <line x1="0" y1="105" x2="400" y2="105" stroke="var(--line)" strokeDasharray="3 3" />
+              <line x1="0" y1="134" x2="400" y2="134" stroke="var(--line)" />
 
               {/* Packet loss line (blue) */}
               <path
-                d={`M0 137 L50 136 L100 136 L150 135 L200 ${lossY + 2} L250 ${lossY} L300 ${lossY + 1} L350 ${lossY} L400 ${lossY}`}
+                d={lossPath}
                 fill="none"
                 stroke="#3b82f6"
                 strokeWidth="2"
@@ -88,7 +99,7 @@ export function E2EMetricsChart() {
 
               {/* Latency line (red trend curve) */}
               <path
-                d={`M0 115 Q 50 110, 100 95 T 200 ${Math.min(130, latencyY + 15)} T 300 ${Math.max(20, latencyY - 5)} T 400 ${latencyY}`}
+                d={latencyPath}
                 fill="none"
                 stroke="#ef4444"
                 strokeWidth="2.5"
@@ -104,7 +115,7 @@ export function E2EMetricsChart() {
           </div>
 
           {/* X-axis time markers */}
-          <div className="ml-9 flex justify-between text-[10px] text-[var(--ink-4)] font-mono pt-1 border-t border-[var(--line)]">
+          <div className="ml-9 flex justify-between text-[10px] text-[var(--ink-4)] font-mono pt-1">
             <span>T - 4m</span>
             <span>T - 3m</span>
             <span>T - 2m</span>
@@ -114,7 +125,7 @@ export function E2EMetricsChart() {
         </div>
 
         {/* Legend */}
-        <div className="mt-3 flex items-center justify-center gap-6 text-[11.5px] font-medium">
+        <div className="mt-2.5 flex items-center justify-center gap-6 text-[11.5px] font-medium">
           <span className="flex items-center gap-1.5 text-[var(--ink-2)]">
             <span className="h-2 w-2 rounded-full bg-[#ef4444]" />
             <span>Latency ({currentLatency} ms)</span>
