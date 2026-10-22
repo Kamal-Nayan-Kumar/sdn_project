@@ -188,7 +188,9 @@ class Lab:
         # Pick the switch backend (OVS preferred, per the spec).
         from switches import Of13UserSwitch, ovs_available
 
-        if ovs_available():
+        if os.environ.get("SDN_SWITCH_BACKEND") == "user":
+            switch_cls, backend = Of13UserSwitch, "of13-user-space"
+        elif ovs_available():
             from mininet.node import OVSSwitch
 
             switch_cls, backend = OVSSwitch, "openvswitch"

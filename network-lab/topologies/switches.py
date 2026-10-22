@@ -29,6 +29,8 @@ LAB_BIN = os.path.join(PROJECT_ROOT, "network-lab", "bin")
 
 def ovs_available() -> bool:
     """True when Open vSwitch binaries are on PATH."""
+    if os.environ.get("SDN_SWITCH_BACKEND") == "user":
+        return False
     return shutil.which("ovs-vsctl") is not None and shutil.which("ovs-vswitchd") is not None
 
 

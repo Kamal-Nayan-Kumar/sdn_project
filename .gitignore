@@ -77,6 +77,7 @@ report/
 # --- playwright / test artifacts & backups ---
 .playwright-mcp/
 playwright-report/
+artifacts/
 test-results/
 *.bak
 *.png

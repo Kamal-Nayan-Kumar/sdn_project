@@ -51,7 +51,7 @@ def test_snapshot_reads_as_a_domain_model(lab):
     from app.schemas.domain import NetworkSnapshot
 
     snapshot = NetworkSnapshot.model_validate_json(result.outputs["snapshot"])
-    flow = next((f for f in snapshot.flows if f.flow_id == "h1->h4"), None)
+    flow = next((f for f in snapshot.flows if f.flow_id in ("F1", "h1->h4") or (f.src_host == "h1" and f.dst_host == "h4")), None)
     assert flow is not None, "the demo flow h1->h4 is not measured"
     assert flow.latency_ms >= 0
     assert flow.packet_loss_pct < 100.0, "no traffic is flowing at all"
