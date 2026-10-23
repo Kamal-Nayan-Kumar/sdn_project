@@ -104,11 +104,17 @@ def start_congestion(request: Annotated[CongestionRequest | None, Body()] = None
 
 
 @router.post("/scenarios/monitor")
-def start_monitor() -> dict:
-    """Start monitoring scenario (placeholder for future implementation)."""
-    try:
-        # The lab bridge doesn't have a monitor method yet, so we return a success
-        # This is a placeholder for when the lab supports monitoring scenarios
-        return {"status": "monitoring_started", "detail": "Monitoring scenario started"}
-    except LabUnavailable as exc:
-        raise _or_503(exc, "start monitor") from exc
+def toggle_monitor(body: dict | None = None) -> dict:
+    """Start or stop the proactive background monitoring watchdog."""
+    from app.services.proactive_monitor import monitor
+    action = (body or {}).get("action", "start")
+    if action == "stop":
+        return monitor.stop()
+    return monitor.start(_client())
+
+
+@router.get("/scenarios/monitor")
+def get_monitor_status() -> dict:
+    """Read the status of the proactive monitoring watchdog."""
+    from app.services.proactive_monitor import monitor
+    return monitor.status()

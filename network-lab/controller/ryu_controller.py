@@ -562,10 +562,10 @@ class IntentRestController(ControllerBase):
                 {"error": "path not a valid switch path", "valid": candidates}, status=400
             )
 
+        reverse_switches = list(reversed(switches))
         with STATE_LOCK:
             FLOW_OVERRIDES[(src_ip, dst_ip)] = list(switches)
-            # Drop the reverse-direction override so it recomputes symmetrically.
-            FLOW_OVERRIDES.pop((dst_ip, src_ip), None)
+            FLOW_OVERRIDES[(dst_ip, src_ip)] = reverse_switches
 
         installed = 0
         for dpid, dp in list(self.app.datapaths.items()):
@@ -586,6 +586,12 @@ class IntentRestController(ControllerBase):
             if out_port is not None:
                 self.app.add_flow(dp, 100, match,
                                   [parser.OFPActionOutput(out_port)], idle=0)
+                installed += 1
+
+            rev_out_port = self.app._port_for(dpid, reverse_switches, dst_ip, src_ip)
+            if rev_out_port is not None:
+                self.app.add_flow(dp, 100, rev_match,
+                                  [parser.OFPActionOutput(rev_out_port)], idle=0)
                 installed += 1
         LOG.info("reroute %s->%s via %s (rules=%d)", src_ip, dst_ip, switches, installed)
         return self._json({"ok": True, "path": switches, "flow_rules_installed": installed})

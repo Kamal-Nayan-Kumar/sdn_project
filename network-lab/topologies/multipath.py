@@ -49,10 +49,10 @@ SWITCH_LINKS: dict[str, dict[str, object]] = {
     # s2-s4 is the single controlled bottleneck of the congestion scenario.
     "s2-s4": {"capacity_mbps": 1000, "delay_ms": 5, "congestible": True},
     # Diagonal that lets one alternative hop over the bottleneck.
-    "s1-s3": {"capacity_mbps": 1000, "delay_ms": 8, "congestible": False},
+    "s1-s3": {"capacity_mbps": 1000, "delay_ms": 6, "congestible": False},
     "s2-s3": {"capacity_mbps": 1000, "delay_ms": 5, "congestible": False},
-    # The long avoidance hop: s1-s3-s4 = 20 ms -> ~41 ms RTT.
-    "s3-s4": {"capacity_mbps": 1000, "delay_ms": 12, "congestible": False},
+    # The long avoidance hop: s1-s3-s4 = 15 ms -> ~38 ms RTT.
+    "s3-s4": {"capacity_mbps": 1000, "delay_ms": 9, "congestible": False},
 }
 
 HOST_ATTACH: dict[str, dict[str, object]] = {

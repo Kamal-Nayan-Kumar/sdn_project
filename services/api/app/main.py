@@ -48,6 +48,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
 
     init_engine()
+    from app.db.repository import init_db, load_runs_into_registry
+    init_db()
+    load_runs_into_registry()
     db_ok, db_detail = check_db_connection()
     LOG.info("database: %s (%s)", "ok" if db_ok else "UNAVAILABLE", db_detail)
 
@@ -63,7 +66,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         LOG.info("database backend: SQLite fallback (%s)", settings.database_url)
 
     app.state.lab = LabBridgeClient()
+    if settings.proactive_monitor_enabled:
+        from app.services.proactive_monitor import monitor
+        monitor.start(app.state.lab)
+
     yield
+    from app.services.proactive_monitor import monitor
+    monitor.stop()
     LOG.info("shutting down")
 
 

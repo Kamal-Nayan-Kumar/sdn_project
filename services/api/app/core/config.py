@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # --- Database ----------------------------------------------------------
     database_url: str = Field(
-        default="sqlite+pysqlite:///./sdn_dev.db", alias="DATABASE_URL"
+        default=f"sqlite+pysqlite:///{PROJECT_ROOT}/sdn_dev.db", alias="DATABASE_URL"
     )
 
     # --- API ---------------------------------------------------------------

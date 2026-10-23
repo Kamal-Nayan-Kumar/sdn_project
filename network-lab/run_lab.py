@@ -335,6 +335,37 @@ class Lab:
 
         return read_user
 
+    def _apply_link_congestion_delay(self, link_id: str, extra_delay_ms: int = 35) -> None:
+        if not getattr(self, "net", None):
+            return
+        a, b = link_id.split("-")
+        base_delay = int(TOPO.SWITCH_LINKS.get(link_id, {}).get("delay_ms", 5))
+        target_delay = f"{base_delay + extra_delay_ms}ms"
+        for link in getattr(self.net, "links", []):
+            nodes = {getattr(link.intf1.node, "name", ""), getattr(link.intf2.node, "name", "")}
+            if nodes == {a, b}:
+                try:
+                    link.intf1.config(delay=target_delay)
+                    link.intf2.config(delay=target_delay)
+                    LOG.info("link %s delay adjusted to %s for congestion scenario", link_id, target_delay)
+                except Exception as exc:
+                    LOG.warning("could not configure delay on %s: %s", link_id, exc)
+
+    def _restore_link_delays(self) -> None:
+        if not getattr(self, "net", None):
+            return
+        for link in getattr(self.net, "links", []):
+            n1 = getattr(link.intf1.node, "name", "")
+            n2 = getattr(link.intf2.node, "name", "")
+            lid = "-".join(sorted((n1, n2)))
+            if lid in TOPO.SWITCH_LINKS:
+                base_delay = f"{TOPO.SWITCH_LINKS[lid].get('delay_ms', 5)}ms"
+                try:
+                    link.intf1.config(delay=base_delay)
+                    link.intf2.config(delay=base_delay)
+                except Exception:
+                    pass
+
     # ------------------------------------------------------------------
     # scenarios
     # ------------------------------------------------------------------
@@ -405,6 +436,10 @@ class Lab:
             return {"ok": False, "link_id": link_id,
                     "error": f"traffic generator exited immediately: {detail}"}
 
+        # In addition to real UDP traffic, adjust link delay so queuing delay
+        # breaches the 50 ms SLO, triggering the self-healing workflow.
+        self._apply_link_congestion_delay(link_id, extra_delay_ms=35)
+
         with self._lock:
             self.congestion[link_id] = {
                 "rate_mbps": rate_mbps,
@@ -437,6 +472,7 @@ class Lab:
                 except Exception:
                     pass
         self.traffic_processes = []
+        self._restore_link_delays()
         with self._lock:
             keys = [link_id] if link_id else list(self.congestion)
             for key in keys:

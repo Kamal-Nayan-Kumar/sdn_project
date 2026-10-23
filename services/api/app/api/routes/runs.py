@@ -78,10 +78,20 @@ async def _run_graph(run_id: str, user_message: str) -> None:
         record.publish(EventType.RUN_FAILED,
                       error=f"{type(exc).__name__}: {exc}")
         record.finish(outcome="error", error=str(exc))
+        try:
+            from app.db.repository import save_run_record
+            save_run_record(record)
+        except Exception:
+            pass
         return
 
     _publish_result(record, final)
     record.finish(outcome=str(final.get("final_outcome") or "unknown"), final_state=final)
+    try:
+        from app.db.repository import save_run_record
+        save_run_record(record)
+    except Exception:
+        pass
 
 
 def _invoke(graph, state, on_step):
