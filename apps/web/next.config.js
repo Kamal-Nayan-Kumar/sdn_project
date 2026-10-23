@@ -4,7 +4,7 @@ const nextConfig = {
   devIndicators: false,
 
   async rewrites() {
-    const apiOrigin = (process.env.NEXT_PUBLIC_API_ORIGIN ?? "http://sdn-lab.orb.local:8000").replace(/\/+$/, "");
+    const apiOrigin = (process.env.NEXT_PUBLIC_API_ORIGIN ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
 
     return [
       // Ops routes such as /health live at the root, not under /v1

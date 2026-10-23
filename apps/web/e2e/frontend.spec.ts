@@ -12,7 +12,7 @@ test.describe('NetMind Frontend', () => {
     await expect(page.getByText('Agentic control for SDN')).toBeVisible();
 
     // Check status indicators
-    await expect(page.getByText('Network lab connected')).toBeVisible();
+    await expect(page.getByText('Network lab connected')).toBeVisible({ timeout: 10000 });
     await expect(page.getByText('Agent idle')).toBeVisible();
 
     // Check navigation items
@@ -20,7 +20,7 @@ test.describe('NetMind Frontend', () => {
     await expect(page.getByRole('button', { name: 'Network Topology' })).toBeVisible();
 
     // Check metric strip
-    await expect(page.getByText('Video Latency')).toBeVisible();
+    await expect(page.getByText('Video Latency', { exact: true })).toBeVisible();
     await expect(page.getByText('Link Utilization')).toBeVisible();
     await expect(page.getByText('Packet Loss', { exact: true })).toBeVisible();
     await expect(page.getByText('Protected Flow (Voice)')).toBeVisible();

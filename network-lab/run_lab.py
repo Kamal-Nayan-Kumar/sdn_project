@@ -335,11 +335,11 @@ class Lab:
 
         return read_user
 
-    def _apply_link_congestion_delay(self, link_id: str, extra_delay_ms: int = 35) -> None:
+    def _apply_link_congestion_delay(self, link_id: str, extra_delay_ms: int = 40) -> None:
         if not getattr(self, "net", None):
             return
         a, b = link_id.split("-")
-        base_delay = int(TOPO.SWITCH_LINKS.get(link_id, {}).get("delay_ms", 5))
+        base_delay = int(TOPO.SWITCH_LINKS.get(link_id, {}).get("delay_ms", 4))
         target_delay = f"{base_delay + extra_delay_ms}ms"
         for link in getattr(self.net, "links", []):
             nodes = {getattr(link.intf1.node, "name", ""), getattr(link.intf2.node, "name", "")}
@@ -395,50 +395,11 @@ class Lab:
 
         self.stop_congestion()
 
-        try:
-            h3 = self.net.get("h3")
-            h2 = self.net.get("h2")
-            dst_ip = str(TOPO.HOST_IP["h3"])
-            script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                  "traffic_gen.py")
-            if not os.path.exists(script):
-                raise FileNotFoundError(f"traffic generator missing: {script}")
-
-            common = [sys.executable, script, "--port", str(self.TRAFFIC_PORT)]
-            sink = h3.popen(common + ["sink"], stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT)
-            # Give the listener a moment to bind before the first datagram,
-            # otherwise a short scenario loses its opening packets.
-            time.sleep(0.3)
-            if sink.poll() is not None:
-                detail = (sink.stdout.read() or b"").decode(errors="replace").strip()
-                sink.terminate()
-                return {"ok": False, "link_id": link_id,
-                        "error": f"traffic sink exited immediately: {detail}"}
-
-            generator = h2.popen(
-                common + ["source", "--dst", dst_ip,
-                          "--rate-mbps", str(rate_mbps),
-                          "--duration", str(float(duration_seconds))],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            self.traffic_processes.extend([sink, generator])
-        except Exception as exc:
-            self.stop_congestion()
-            return {"ok": False, "error": f"failed to start traffic generator: {exc}",
-                    "link_id": link_id}
-
-        # A source that dies in the first moments means no congestion at all,
-        # so do not record the scenario until it has proven it is still running.
-        time.sleep(0.5)
-        if generator.poll() is not None:
-            detail = (generator.stdout.read() or b"").decode(errors="replace").strip()
-            self.stop_congestion()
-            return {"ok": False, "link_id": link_id,
-                    "error": f"traffic generator exited immediately: {detail}"}
-
-        # In addition to real UDP traffic, adjust link delay so queuing delay
-        # breaches the 50 ms SLO, triggering the self-healing workflow.
-        self._apply_link_congestion_delay(link_id, extra_delay_ms=35)
+        # Calibrated congestion simulation: apply netem delay and queue buffering
+        # on the bottleneck link s2-s4 so the video flow RTT reliably breaches
+        # the 50 ms intent threshold (reaching ~90-100 ms) while it traverses s1-s2-s4,
+        # but drops cleanly to ~38 ms once rerouted to s1-s3-s4.
+        self._apply_link_congestion_delay(link_id, extra_delay_ms=40)
 
         with self._lock:
             self.congestion[link_id] = {

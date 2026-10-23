@@ -44,15 +44,15 @@ from dataclasses import dataclass, field
 #: keeping every alternative path comfortably under the 50 ms video intent
 #: while the congested shortest path inflates well past it.
 SWITCH_LINKS: dict[str, dict[str, object]] = {
-    # Shortest video route h1->s1->s2->s4->h4 (10 ms configured, ~21 ms RTT).
-    "s1-s2": {"capacity_mbps": 1000, "delay_ms": 5, "congestible": True},
+    # Shortest video route h1->s1->s2->s4->h4 (8 ms configured, ~22 ms RTT).
+    "s1-s2": {"capacity_mbps": 1000, "delay_ms": 4, "congestible": True},
     # s2-s4 is the single controlled bottleneck of the congestion scenario.
-    "s2-s4": {"capacity_mbps": 1000, "delay_ms": 5, "congestible": True},
+    "s2-s4": {"capacity_mbps": 1000, "delay_ms": 4, "congestible": True},
     # Diagonal that lets one alternative hop over the bottleneck.
-    "s1-s3": {"capacity_mbps": 1000, "delay_ms": 6, "congestible": False},
-    "s2-s3": {"capacity_mbps": 1000, "delay_ms": 5, "congestible": False},
-    # The long avoidance hop: s1-s3-s4 = 15 ms -> ~38 ms RTT.
-    "s3-s4": {"capacity_mbps": 1000, "delay_ms": 9, "congestible": False},
+    "s1-s3": {"capacity_mbps": 1000, "delay_ms": 5, "congestible": False},
+    "s2-s3": {"capacity_mbps": 1000, "delay_ms": 4, "congestible": False},
+    # The long avoidance hop: s1-s3-s4 = 12 ms -> ~34 ms RTT.
+    "s3-s4": {"capacity_mbps": 1000, "delay_ms": 7, "congestible": False},
 }
 
 HOST_ATTACH: dict[str, dict[str, object]] = {

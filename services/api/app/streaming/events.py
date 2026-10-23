@@ -51,6 +51,16 @@ class EventType(str, Enum):
 
     NOTE = "note"
 
+    # live model output. `thinking` is the agent narrating what it is doing
+    # while a step runs; `token` is the answer the user reads. Both arrive as
+    # incremental deltas so the transcript types out as it is generated.
+    THINKING = "thinking"
+    TOKEN = "token"
+
+    # deterministic guardrail verdicts, surfaced so the operator can see a
+    # request refused as clearly as one acted on.
+    GUARDRAIL = "guardrail"
+
 
 # The order a run is expected to publish them in. Used only to detect gaps, not
 # to enforce it.

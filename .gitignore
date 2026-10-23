@@ -11,7 +11,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-.venv/
 venv/
 ENV/
 *.egg-info/
@@ -61,7 +60,6 @@ sdn_dev.db
 ovs.log
 
 # --- ryu source checkout (vendored, rebuilt via scripts/setup-ryu.sh) ---
-/network-lab/controller/ryu-src/
 
 # --- build artifacts (built via scripts/setup-mininet.sh) ---
 /network-lab/bin/mnexec
@@ -81,3 +79,5 @@ artifacts/
 test-results/
 *.bak
 *.png
+.venv
+network-lab/controller/ryu-src

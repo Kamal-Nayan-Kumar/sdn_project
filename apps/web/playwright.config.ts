@@ -20,7 +20,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `CI=true NEXT_PUBLIC_API_ORIGIN=${process.env.NEXT_PUBLIC_API_ORIGIN || 'http://sdn-lab.orb.local:8000'} npm run dev -- -p ${PORT}`,
+    command: `CI=true NEXT_PUBLIC_API_ORIGIN=${process.env.NEXT_PUBLIC_API_ORIGIN || 'http://127.0.0.1:8000'} npm run dev -- -p ${PORT}`,
     url: `http://localhost:${PORT}`,
     reuseExistingServer: false,
     timeout: 120000,

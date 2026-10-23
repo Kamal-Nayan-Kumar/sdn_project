@@ -45,6 +45,7 @@ class RunRecord:
     finished_at: Any = None
     outcome: str | None = None
     terminal: bool = False
+    cancel_requested: bool = False
     error: str | None = None
     final_state: dict[str, Any] | None = None
     history: deque[StreamEvent] = field(
