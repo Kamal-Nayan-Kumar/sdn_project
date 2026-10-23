@@ -11,7 +11,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { AgentRunSummary, ConnectionState, IntentSpec, IsoDateTime, LabHealth, NetworkSnapshot } from "@/types";
+import type { AgentRunStatus, AgentRunSummary, ConnectionState, IntentSpec, IsoDateTime, LabHealth, NetworkSnapshot } from "@/types";
 
 /**
  * Single polling point for the dashboard shell.
@@ -52,6 +52,8 @@ interface LabDataValue {
   reset: LabActionState;
   congestion: LabActionState;
   monitor: LabActionState;
+  agentStatus: AgentRunStatus;
+  setAgentStatus: (status: AgentRunStatus) => void;
   currentRun: AgentRunSummary | null;
   setCurrentRun: (run: AgentRunSummary | null) => void;
   resetLab: () => Promise<void>;
@@ -102,6 +104,7 @@ export function LabDataProvider({ children }: { children: ReactNode }) {
   const [reset, setReset] = useState<LabActionState>(IDLE_ACTION);
   const [congestion, setCongestion] = useState<LabActionState>(IDLE_ACTION);
   const [monitor, setMonitor] = useState<LabActionState>(IDLE_ACTION);
+  const [agentStatus, setAgentStatus] = useState<AgentRunStatus>("idle");
   const [currentRun, setCurrentRun] = useState<AgentRunSummary | null>(null);
 
   const refresh = useCallback(() => setPollNonce((n) => n + 1), []);
@@ -228,6 +231,8 @@ export function LabDataProvider({ children }: { children: ReactNode }) {
       reset,
       congestion,
       monitor,
+      agentStatus,
+      setAgentStatus,
       currentRun,
       setCurrentRun,
       resetLab,
@@ -235,7 +240,7 @@ export function LabDataProvider({ children }: { children: ReactNode }) {
       startMonitor,
       refresh,
     };
-  }, [congestion, health, monitor, refresh, reset, resetLab, createCongestion, startMonitor, snapshot, snapshotDetail, currentRun]);
+  }, [agentStatus, congestion, health, monitor, refresh, reset, resetLab, createCongestion, startMonitor, snapshot, snapshotDetail, currentRun]);
 
   return <LabDataContext.Provider value={value}>{children}</LabDataContext.Provider>;
 }

@@ -222,6 +222,9 @@ class SDNIntentController(app_manager.RyuApp):
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
         self.add_flow(datapath, 0, match, actions)
         LOG.info("switch %s connected (OF1.3)", datapath.id)
+        # Pre-install static shortest-path flows for every host pair as switches connect,
+        # ensuring all traffic paths are offloaded from the software controller loop.
+        self.install_default_paths()
 
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def port_stats_reply_handler(self, ev):
@@ -345,6 +348,35 @@ class SDNIntentController(app_manager.RyuApp):
         nxt = path[idx + 1]
         link_id = "-".join(sorted((dpid_name, nxt)))
         return _edge_ports(link_id, dpid_name)
+
+    def install_default_paths(self) -> int:
+        """Pin every host pair to its shortest switch path at priority 100.
+
+        Used by reset. The rules are the same shape a reroute installs, only
+        with the baseline path, so a reset leaves the data plane in exactly
+        the state a fresh lab would have.
+        """
+        import itertools
+
+        installed = 0
+        pairs = itertools.combinations(sorted(HOST_IPS), 2)
+        for first, second in pairs:
+            for src_host, dst_host in ((first, second), (second, first)):
+                src_ip, dst_ip = HOST_IPS[src_host], HOST_IPS[dst_host]
+                paths = _all_switch_paths(src_ip, dst_ip)
+                if not paths:
+                    continue
+                switches = paths[0]
+                for dpid, dp in list(self.datapaths.items()):
+                    parser = dp.ofproto_parser
+                    match = self._match_for(parser, src_ip, dst_ip)
+                    out_port = self._port_for(dpid, switches, src_ip, dst_ip)
+                    if out_port is None:
+                        continue
+                    self.add_flow(dp, 100, match,
+                                  [parser.OFPActionOutput(out_port)], idle=0)
+                    installed += 1
+        return installed
 
     def add_flow(self, datapath, priority, match, actions, idle=0, hard=0):
         ofproto = datapath.ofproto
@@ -603,13 +635,15 @@ class IntentRestController(ControllerBase):
         with STATE_LOCK:
             FLOW_OVERRIDES.clear()
             CONGESTION.clear()
-        for _, dp in list(self.app.datapaths.items()):
-            parser = dp.ofproto_parser
-            dp.send_msg(parser.OFPFlowMod(
-                datapath=dp, command=dp.ofproto.OFPFC_DELETE,
-                out_port=dp.ofproto.OFPP_ANY, out_group=dp.ofproto.OFPG_ANY,
-                priority=100,
-            ))
+        # Pin every host pair back to its baseline path at priority 100.
+        # Deleting the override alone was not enough: the priority-1 L2
+        # learning rules installed while traffic was on the alternate path
+        # have no idle timeout, so packets kept taking the old route while
+        # the dashboard reported the baseline one. Installing the baseline
+        # explicitly makes reset deterministic without flushing the table
+        # (a full flush raced the table-miss reinstall and blackholed ARP).
+        installed = self.app.install_default_paths()
+        LOG.info("reset installed %d baseline flow rules", installed)
         return self._json({"ok": True, "message": "flow overrides cleared"})
 
     @route("sdn", "/v1/congestion", methods=["POST"])

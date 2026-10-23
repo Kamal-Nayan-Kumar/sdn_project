@@ -16,10 +16,11 @@ Design rules (from the spec, enforced here rather than merely documented):
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
@@ -157,11 +158,16 @@ def _new_action_id() -> str:
 
 
 def run_tool(name: str, inputs: dict[str, Any],
-             client: LabBridgeClient) -> ToolResult:
+             client: LabBridgeClient,
+             observer: "ToolObserver | None" = None) -> ToolResult:
     """Dispatch a tool call through the allow-list.
 
     Unknown tools raise; that is intentional -- the graph must not be able to
     invent behaviour at runtime.
+
+    `observer`, when supplied, is called with (`"started"`/`"completed"`,
+    tool name, payload) around the call. The graph uses it to publish live tool
+    events; tests call the tool directly and pass nothing.
     """
     if name not in TOOL_REGISTRY:
         raise KeyError(f"tool '{name}' is not on the allow-list")
@@ -172,18 +178,81 @@ def run_tool(name: str, inputs: dict[str, Any],
     except Exception as exc:
         return ToolResult(tool=name, ok=False, error=f"invalid inputs: {exc}")
 
+    if observer is not None:
+        observer("started", name, {"inputs": _brief(inputs)})
+
     started = time.monotonic()
     try:
         outputs = _DISPATCH[name](params, client)
     except LabUnavailable as exc:
-        return ToolResult(tool=name, ok=False, error=str(exc),
-                          duration_ms=_elapsed(started))
+        result = ToolResult(tool=name, ok=False, error=str(exc),
+                            duration_ms=_elapsed(started))
     except Exception as exc:
-        return ToolResult(tool=name, ok=False,
-                          error=f"{type(exc).__name__}: {exc}",
-                          duration_ms=_elapsed(started))
-    return ToolResult(tool=name, ok=True, outputs=outputs,
-                      duration_ms=_elapsed(started))
+        result = ToolResult(tool=name, ok=False,
+                            error=f"{type(exc).__name__}: {exc}",
+                            duration_ms=_elapsed(started))
+    else:
+        result = ToolResult(tool=name, ok=True, outputs=outputs,
+                            duration_ms=_elapsed(started))
+
+    if observer is not None:
+        observer("completed", name, {
+            "ok": result.ok,
+            "duration_ms": result.duration_ms,
+            "error": result.error,
+            "summary": _summarise_outputs(name, result.outputs),
+        })
+    return result
+
+
+#: (`started`|`completed`, tool name, payload)
+ToolObserver = Callable[[str, str, dict[str, Any]], None]
+
+
+def _brief(inputs: dict[str, Any], limit: int = 160) -> dict[str, Any]:
+    """A short, secret-free echo of the tool inputs for the activity log."""
+    brief: dict[str, Any] = {}
+    for key, value in (inputs or {}).items():
+        if isinstance(value, str):
+            brief[key] = value if len(value) <= limit else value[:limit] + "…"
+        elif isinstance(value, (int, float, bool)) or value is None:
+            brief[key] = value
+        elif isinstance(value, list):
+            brief[key] = value[:6]
+        elif isinstance(value, dict):
+            brief[key] = {k: str(v)[:60] for k, v in list(value.items())[:6]}
+        else:
+            brief[key] = str(value)[:limit]
+    return brief
+
+
+def _summarise_outputs(name: str, outputs: dict[str, Any]) -> str:
+    """One line describing what a tool returned, without dumping the payload."""
+    if not outputs:
+        return "no output"
+    if name == "get_network_snapshot":
+        snapshot = outputs.get("snapshot")
+        try:
+            data = json.loads(snapshot) if isinstance(snapshot, str) else snapshot
+            flows = data.get("flows") or {}
+            links = data.get("links") or {}
+            congested = data.get("congested_links") or []
+            return (f"{len(flows)} flows, {len(links)} links measured"
+                    + (f", congested: {', '.join(congested)}" if congested else ""))
+        except Exception:
+            return "snapshot collected"
+    if name == "evaluate_paths":
+        return f"{len(outputs.get('candidates') or [])} candidate paths"
+    if name == "apply_reroute":
+        controller = outputs.get("controller") or {}
+        path = controller.get("path") or outputs.get("path") or []
+        rules = controller.get("flow_rules_installed", 0)
+        return f"path {'-'.join(path) if path else 'unknown'}, {rules} rules installed"
+    if name == "get_topology":
+        return f"{len(outputs.get('nodes') or [])} nodes, {len(outputs.get('links') or [])} links"
+    if name == "get_link_telemetry":
+        return f"{len(outputs.get('links') or [])} links"
+    return ", ".join(f"{k}={str(v)[:40]}" for k, v in list(outputs.items())[:3])
 
 
 def _elapsed(started: float) -> float:

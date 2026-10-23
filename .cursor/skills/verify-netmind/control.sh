@@ -101,7 +101,7 @@ case "${cmd}" in
   test-frontend)
     echo "==> Running Playwright frontend E2E tests on macOS..."
     cd "${PROJECT_ROOT}/apps/web"
-    NEXT_PUBLIC_API_ORIGIN="${API_URL}" npx playwright test
+    NEXT_PUBLIC_API_ORIGIN="http://127.0.0.1:8000" npx playwright test
     ;;
 
   cleanup)

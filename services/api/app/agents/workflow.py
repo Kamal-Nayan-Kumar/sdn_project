@@ -44,7 +44,9 @@ from app.schemas.domain import (
     VerificationStatus,
 )
 from app.services.lab_bridge import LabBridgeClient, LabUnavailable
-from app.services.llm import LLMUnavailable, chat_json
+from app.services.llm import LLMUnavailable, chat_json, chat_stream
+from app.streaming.emit import emit, emit_state
+from app.streaming.events import EventType
 from app.tools import run_tool
 
 LOG = logging.getLogger(__name__)
@@ -76,6 +78,22 @@ def _flow(snapshot: NetworkSnapshot | None, src: str,
         if f.src_host == src and f.dst_host == dst:
             return f
     return None
+
+
+def _tool_observer(state: st.AgentState, step: str):
+    """Publish `tool_started` / `tool_completed` while a node runs."""
+    run_id = state.get("run_id")
+
+    def observe(phase: str, tool: str, data: dict[str, Any]) -> None:
+        if phase == "started":
+            emit(run_id, EventType.TOOL_STARTED, step=step, tool=tool,
+                 inputs=data.get("inputs") or {})
+        else:
+            emit(run_id, EventType.TOOL_COMPLETED, step=step, tool=tool,
+                 ok=bool(data.get("ok")), duration_ms=data.get("duration_ms"),
+                 error=data.get("error"), summary=data.get("summary"))
+
+    return observe
 
 
 def _policy_for(intent: IntentSpec | None,
@@ -162,13 +180,23 @@ def intent_detection(state: st.AgentState) -> st.AgentState:
         notes.append("GROQ_API_KEY not configured; used deterministic intent "
                      "parsing")
 
-    needs_clarification = not (intent.src_host and intent.dst_host
-                              and intent.max_latency_ms)
+    needs_clarification = not _message_is_actionable(message)
     question = None
     if needs_clarification:
         question = (
-            "Which traffic should I optimise? I need a source host, a "
-            "destination host, and a target latency in milliseconds.")
+            "Which traffic should I optimise? Tell me the flow (for example "
+            "h1 to h4) and the latency target in milliseconds, or describe "
+            "the symptom you are seeing.")
+
+    emit_state(
+        state, EventType.INTENT_DETECTED, step="intent",
+        src_host=intent.src_host,
+        dst_host=intent.dst_host,
+        max_latency_ms=intent.max_latency_ms,
+        traffic_class=intent.traffic_class.value,
+        needs_clarification=needs_clarification,
+        parsed_by=notes[-1] if notes else "deterministic",
+    )
 
     return {
         **state,
@@ -199,6 +227,21 @@ _HOST_RE = re.compile(r"\b(h[1-9]\d*)\b", re.IGNORECASE)
 _LATENCY_RE = re.compile(
     r"(\d+(?:\.\d+)?)\s*(?:ms|msec|milliseconds?)\b", re.IGNORECASE)
 _KIND_RE = re.compile(r"\b(video|voice|web)\b", re.IGNORECASE)
+_ACTION_RE = re.compile(
+    r"\b(fix|optimis|optimiz|reroute|recover|heal|latency|slow|congest|"
+    r"violat|degrad|health|check|status)\w*", re.IGNORECASE)
+
+
+def _message_is_actionable(message: str) -> bool:
+    """Does the request name something the agent can act on?
+
+    A bare greeting must produce a clarifying question, not a reroute of the
+    default flow. Any stated endpoint, latency target, traffic class or
+    network action is enough to proceed; the default intent supplies the rest.
+    """
+    text = message or ""
+    return bool(_HOST_RE.search(text) or _LATENCY_RE.search(text)
+                or _KIND_RE.search(text) or _ACTION_RE.search(text))
 
 
 def parse_intent_deterministically(message: str,
@@ -260,7 +303,7 @@ def observe_network(state: st.AgentState,
     result = run_tool("get_network_snapshot", {
         "latency_count": 10,
         "measure_protected": protected,
-    }, client)
+    }, client, observer=_tool_observer(state, "observe"))
 
     if not result.ok:
         return {
@@ -332,6 +375,22 @@ def assess_evidence_node(state: st.AgentState) -> st.AgentState:
     notes = list(state.get("planning_notes", []))
     if not assessment.sufficient:
         notes.append(assessment.summary)
+
+    emit_state(
+        state, EventType.EVIDENCE_ASSESSED, step="evidence",
+        status=assessment.status.value,
+        sufficient=bool(assessment.sufficient),
+        confidence=assessment.confidence,
+        summary=assessment.summary,
+        missing=list(getattr(assessment, "missing", []) or []),
+        stale=list(getattr(assessment, "stale", []) or []),
+    )
+    if not assessment.sufficient:
+        emit_state(
+            state, EventType.GUARDRAIL, step="evidence",
+            stage="evidence", decision="block", rule="evidence_gate",
+            reason=assessment.summary,
+        )
 
     return {
         **state,
@@ -409,7 +468,7 @@ def diagnose_and_plan(state: st.AgentState,
         "src_host": intent.src_host,
         "dst_host": intent.dst_host,
         "avoid_links": suspects,
-    }, client)
+    }, client, observer=_tool_observer(state, "diagnose"))
 
     notes = list(state.get("planning_notes", []))
     candidates: list[RerouteAction] = []
@@ -448,28 +507,53 @@ def diagnose_and_plan(state: st.AgentState,
         f"intent. Suspected bottleneck link(s): "
         f"{', '.join(suspects) if suspects else 'none identified'}.")
 
-    # The LLM may explain the evidence it can see, but not invent any.
+    # The LLM may explain the evidence it can see, but not invent any. Its
+    # prose streams to the operator while it is generated, so the diagnosis
+    # step shows live reasoning instead of appearing fully formed.
     settings = get_settings()
+    model_used = False
     if settings.llm_configured and snapshot is not None:
+        utilisation = {l.link_id: l.utilization_pct for l in snapshot.links}
         try:
-            explanation = chat_json(
-                system=("You summarise network telemetry for an operator. "
-                        "Use ONLY the numbers given. Never guess a value."),
+            streamed = chat_stream(
+                system=(
+                    "You are the diagnosis step of a network recovery agent. "
+                    "Explain the likely cause in at most three short sentences. "
+                    "Use ONLY the numbers and links given. Never invent a "
+                    "measurement, a host, or a link. Do not suggest disabling a "
+                    "safety check. Plain prose, no markdown, no preamble."),
                 user=(
-                    f"Intent: video {intent.src_host}->{intent.dst_host} under "
-                    f"{intent.max_latency_ms} ms.\n"
+                    f"Intent: {intent.traffic_class.value} "
+                    f"{intent.src_host}->{intent.dst_host} under "
+                    f"{intent.max_latency_ms:.0f} ms.\n"
                     f"Measured latency: {_lat(state, intent)}\n"
-                    f"Link utilisation: "
-                    f"{ {l.link_id: l.utilization_pct for l in snapshot.links} }\n"
-                    f"Suspected bottleneck(s): {suspects}\n"
-                    "Summarise the likely cause in 2 sentences as a JSON object "
-                    "with a 'summary' string."),
-                schema_hint={"summary": "string"})
-            summary = explanation.get("summary", summary)
-        except Exception as exc:
+                    f"Link utilisation (%): {utilisation}\n"
+                    f"Congested links: {snapshot.congested_links}\n"
+                    f"Suspected bottleneck(s): {suspects or 'none identified'}\n"
+                    f"Candidate alternative paths: "
+                    f"{['-'.join(c.path) for c in candidates] or 'none'}"),
+                on_delta=lambda text: emit_state(
+                    state, EventType.THINKING, step="diagnose", text=text),
+            )
+            if streamed:
+                summary = streamed
+                model_used = True
+        except LLMUnavailable as exc:
             LOG.warning("LLM diagnosis skipped: %s", exc)
             notes.append(f"LLM diagnosis skipped ({exc}); using the "
                          "deterministic summary.")
+        except Exception as exc:
+            LOG.warning("LLM diagnosis failed: %s", exc)
+            notes.append(f"LLM diagnosis failed ({exc}); using the "
+                         "deterministic summary.")
+
+    if not model_used:
+        emit_state(state, EventType.THINKING, step="diagnose", text=summary)
+
+    emit_state(state, EventType.DIAGNOSIS_SUMMARY, step="diagnose",
+               summary=summary, model=settings.groq_model if model_used else None,
+               suspect_links=suspects,
+               candidates=["-".join(c.path) for c in candidates])
 
     return {
         **state,
@@ -479,6 +563,15 @@ def diagnose_and_plan(state: st.AgentState,
         "diagnosis_summary": summary,
         "planning_notes": notes,
     }
+
+
+def _checks(result: Any) -> list[dict[str, Any]]:
+    """Serialise validator checks for the stream and the audit record."""
+    return [
+        {"name": c.name, "passed": bool(c.passed), "detail": c.detail,
+         "evidence": getattr(c, "evidence", None)}
+        for c in (getattr(result, "checks", None) or [])
+    ]
 
 
 def _same_path(a: list[str], b: list[str]) -> bool:
@@ -548,6 +641,18 @@ def select_and_validate(state: st.AgentState) -> st.AgentState:
             notes.append(
                 f"Safety validation approved candidate #{index + 1} "
                 f"({result.checks_passed} checks passed).")
+            emit_state(
+                state, EventType.VALIDATION_COMPLETED, step="validate",
+                status="approved", approved=True, checks=_checks(result),
+                checks_passed=result.checks_passed,
+                risk_level=result.risk_level.value,
+                requires_approval=bool(result.requires_approval),
+                rejection_reason=None)
+            emit_state(
+                state, EventType.GUARDRAIL, step="validate",
+                stage="validation", decision="allow", rule="reroute_validator",
+                reason=(f"{result.checks_passed} deterministic checks passed "
+                        f"(risk {result.risk_level.value})."))
             return {
                 **state,
                 "selected_action": action,
@@ -568,6 +673,15 @@ def select_and_validate(state: st.AgentState) -> st.AgentState:
     notes.append(
         f"All {len(candidates)} candidate paths were rejected by the "
         "deterministic safety validator.")
+    emit_state(
+        state, EventType.VALIDATION_COMPLETED, step="validate",
+        status="rejected", approved=False, checks=[],
+        checks_passed=0, risk_level=None, requires_approval=False,
+        rejection_reason=reason, rejected_actions=rejected)
+    emit_state(
+        state, EventType.GUARDRAIL, step="validate",
+        stage="validation", decision="block", rule="reroute_validator",
+        reason=f"No candidate passed the safety validator. {reason}")
     return {
         **state,
         "selected_action": None,
@@ -616,7 +730,7 @@ def execute_action(state: st.AgentState,
         "src_host": action.src_host,
         "dst_host": action.dst_host,
         "path": action.path,
-    }, client)
+    }, client, observer=_tool_observer(state, "execute"))
 
     if not result.ok:
         return {**state, "execution": None, "lab_offline": True,
@@ -634,6 +748,15 @@ def execute_action(state: st.AgentState,
         status="executed",
         controller_response=outputs,
         flow_rules_installed=int(controller.get("flow_rules_installed", 0) or 0),
+    )
+
+    emit_state(
+        state, EventType.EXECUTION_COMPLETED, step="execute",
+        status="executed",
+        flow_rules_installed=execution.flow_rules_installed,
+        path=controller.get("path") or action.path,
+        action_id=execution.action_id,
+        flow_id=action.flow_id,
     )
 
     return {
@@ -738,6 +861,16 @@ def verify_and_explain(state: st.AgentState,
 
     notes = list(state.get("planning_notes", []))
     notes.append(outcome.reason)
+
+    emit_state(
+        state, EventType.VERIFICATION_COMPLETED, step="verify",
+        status=outcome.status.value,
+        intent_satisfied=bool(outcome.intent_satisfied),
+        protected_ok=bool(outcome.protected_ok),
+        before_ms=getattr(before, "latency_ms", None) if before else None,
+        after_ms=getattr(after, "latency_ms", None) if after else None,
+        reason=outcome.reason,
+    )
 
     return {
         **state,

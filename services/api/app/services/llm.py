@@ -21,7 +21,7 @@ import json
 import logging
 import re
 import threading
-from typing import Any
+from typing import Any, Callable
 
 from app.core.config import get_settings
 
@@ -169,6 +169,69 @@ def chat_json(
         raise LLMOutputError(f"unexpected response shape: {exc}") from exc
 
     return _extract_json(content)
+
+
+def chat_stream(
+    *,
+    system: str,
+    user: str,
+    on_delta: Callable[[str], None],
+    should_stop: Callable[[], bool] | None = None,
+    temperature: float = 0.2,
+) -> str:
+    """Stream a prose answer, passing each delta to `on_delta` as it arrives.
+
+    Used where the operator watches the model think (diagnosis) and where the
+    final answer types itself out. The full text is returned so the caller can
+    store it; the deltas are for display only. Cancellation is cooperative:
+    `should_stop` is checked between chunks, and a stopped stream returns the
+    text produced so far rather than raising.
+
+    Raises the same errors as `chat_json` when the model cannot be used, so
+    callers keep one fallback path.
+    """
+    settings = get_settings()
+    client = _get_client()
+
+    try:
+        completion = client.chat.completions.create(
+            model=settings.groq_model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=temperature,
+            stream=True,
+            timeout=settings.groq_timeout_seconds,
+        )
+    except Exception as exc:
+        name = type(exc).__name__
+        if "Timeout" in name:
+            raise LLMTimeout(
+                f"{settings.groq_model} exceeded "
+                f"{settings.groq_timeout_seconds}s") from exc
+        raise LLMUnavailable(f"Groq request failed: {exc}") from exc
+
+    parts: list[str] = []
+    try:
+        for chunk in completion:
+            if should_stop is not None and should_stop():
+                break
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            text = getattr(delta, "content", None) if delta is not None else None
+            if not text:
+                continue
+            parts.append(text)
+            on_delta(text)
+    except Exception as exc:  # a broken stream is still a usable prefix
+        if not parts:
+            raise LLMUnavailable(f"Groq stream failed: {exc}") from exc
+        LOG.warning("Groq stream ended early: %s", exc)
+
+    return "".join(parts).strip()
 
 
 def llm_available() -> bool:

@@ -5,21 +5,17 @@ import { ActivityTimeline } from "@/components/agent-activity/ActivityTimeline";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { RunDetailsPanel } from "./RunDetailsPanel";
 import type { ActivityGroup, AgentRunStatus, ChatMessage, ActivityStepKey } from "@/types";
-
-/**
- * Right-hand sidebar region: the conversation and the streamed agent
- * activity (spec section 9, "Chat sidebar").
- *
- * Both panels are real components (contracts in `apps/web/types.ts`).
- * They connect to the backend via /api/runs and SSE streaming.
- */
-
 import { useLabData } from "./lab-data";
 
+/**
+ * Right-hand sidebar region: real-time streaming conversation, tool telemetry,
+ * and structured run activity.
+ */
+
 export function Sidebar() {
-  const { setCurrentRun } = useLabData();
+  const { setCurrentRun, setAgentStatus: setGlobalAgentStatus } = useLabData();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [agentStatus, setAgentStatus] = useState<AgentRunStatus>("idle");
+  const [agentStatus, setLocalAgentStatus] = useState<AgentRunStatus>("idle");
   const [isStreaming, setIsStreaming] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [activityGroups, setActivityGroups] = useState<ActivityGroup[]>([]);
@@ -28,14 +24,19 @@ export function Sidebar() {
   const msgCounterRef = useRef(0);
   const nextMsgId = useCallback(() => `msg-${Date.now()}-${msgCounterRef.current++}`, []);
 
+  const updateStatus = useCallback((status: AgentRunStatus) => {
+    setLocalAgentStatus(status);
+    setGlobalAgentStatus(status);
+  }, [setGlobalAgentStatus]);
+
   const handleStop = useCallback(() => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
     }
     setIsStreaming(false);
-    setAgentStatus("cancelled");
-  }, []);
+    updateStatus("cancelled");
+  }, [updateStatus]);
 
   const handleSend = useCallback(async (text: string) => {
     try {
@@ -53,10 +54,9 @@ export function Sidebar() {
       const runId = data.run_id;
       runIdRef.current = runId;
       setConversationId(runId);
-      setAgentStatus("running");
+      updateStatus("running");
       setIsStreaming(true);
 
-      // Add user message with all required fields
       const userMessage: ChatMessage = {
         id: nextMsgId(),
         role: "user",
@@ -69,25 +69,29 @@ export function Sidebar() {
       };
       setMessages((prev) => [...prev, userMessage]);
 
-      // Connect to the SSE stream.
-      //
-      // Every frame the backend writes carries an explicit `event:` name
-      // (`event: run_completed`, `event: validation_completed`, ...). A named
-      // SSE event is dispatched only to listeners registered for that name, so
-      // `onmessage` -- which receives only the default, unnamed `message`
-      // event -- never fires. Registering per type is what makes the stream
-      // visible in the UI at all.
       const eventSource = new EventSource(`/api/runs/${runId}/stream`);
       eventSourceRef.current = eventSource;
+
+      // Assistant message tracking for live token streaming
+      let assistantMsgId: string | null = null;
 
       const handleFrame = (parsed: Record<string, any>) => {
         const eventType = parsed.type;
 
-        if (eventType === "run_started") {
-          // Run started - initial state already set
-        } else if (eventType === "step_started") {
-          // Update activity group status
-          const stepKey = parsed.step;
+        if (eventType === "step_started") {
+          const rawStep = parsed.step;
+          const stepMap: Record<string, ActivityStepKey> = {
+            intent: "intent_detection",
+            observe: "evidence_collection",
+            evidence: "evidence_collection",
+            diagnose: "diagnosis_summary",
+            validate: "safety_validation",
+            execute: "execution",
+            observe_after: "recovery_verification",
+            verify: "recovery_verification",
+            answer: "diagnosis_summary",
+          };
+          const stepKey: ActivityStepKey = stepMap[rawStep] || "diagnosis_summary";
           setActivityGroups((prev) => {
             const existingIndex = prev.findIndex((g) => g.key === stepKey);
             if (existingIndex >= 0) {
@@ -99,15 +103,14 @@ export function Sidebar() {
               };
               return updated;
             }
-            // Add new group
             const stepLabels: Record<ActivityStepKey, string> = {
               intent_detection: "Intent Detection",
               evidence_collection: "Evidence Collection",
-              diagnosis_summary: "Diagnosis",
+              diagnosis_summary: "Diagnosis & Planning",
               recovery_planning: "Recovery Planning",
-              tool_calls: "Tool Calls",
-              safety_validation: "Safety Validation",
-              execution: "Execution",
+              tool_calls: "Tool Invocations",
+              safety_validation: "Safety Gate Validation",
+              execution: "Data Plane Execution",
               recovery_verification: "Recovery Verification",
             };
             return [
@@ -122,21 +125,122 @@ export function Sidebar() {
             ];
           });
         } else if (eventType === "step_completed") {
-          // Mark step as complete
-          const stepKey = parsed.step;
+          const rawStep = parsed.step;
+          const stepMap: Record<string, ActivityStepKey> = {
+            intent: "intent_detection",
+            observe: "evidence_collection",
+            evidence: "evidence_collection",
+            diagnose: "diagnosis_summary",
+            validate: "safety_validation",
+            execute: "execution",
+            observe_after: "recovery_verification",
+            verify: "recovery_verification",
+            answer: "diagnosis_summary",
+          };
+          const stepKey: ActivityStepKey = stepMap[rawStep] || "diagnosis_summary";
           setActivityGroups((prev) =>
             prev.map((g) =>
               g.key === stepKey
-                ? { ...g, status: "complete", finishedAt: new Date(parsed.timestamp * 1000).toISOString() }
+                ? {
+                    ...g,
+                    status: "complete",
+                    summary: parsed.payload?.summary || g.summary,
+                    finishedAt: new Date(parsed.timestamp * 1000).toISOString(),
+                  }
                 : g
             )
           );
+        } else if (eventType === "thinking") {
+          // Model live thought streaming (diagnosis / reasoning)
+          const chunk = parsed.payload?.text || "";
+          setActivityGroups((prev) => {
+            const diagGroup = prev.find((g) => g.key === "diagnosis_summary");
+            if (diagGroup) {
+              return prev.map((g) =>
+                g.key === "diagnosis_summary"
+                  ? { ...g, summary: (g.summary ? g.summary + chunk : chunk).slice(-120) }
+                  : g
+              );
+            }
+            return prev;
+          });
+        } else if (eventType === "token") {
+          // Live token streaming for the final assistant explanation
+          const delta = parsed.payload?.text || "";
+          if (!assistantMsgId) {
+            assistantMsgId = nextMsgId();
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: assistantMsgId!,
+                role: "assistant",
+                content: delta,
+                createdAt: new Date().toISOString(),
+                streaming: true,
+                runId: runId,
+                outcome: null,
+                attachments: [],
+              },
+            ]);
+          } else {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId
+                  ? { ...m, content: m.content + delta, streaming: true }
+                  : m
+              )
+            );
+          }
+        } else if (eventType === "tool_started") {
+          const tool = parsed.payload?.tool;
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: nextMsgId(),
+              role: "system",
+              content: `🔧 Invoking tool: ${tool}`,
+              createdAt: new Date().toISOString(),
+              streaming: false,
+              runId,
+              outcome: null,
+              attachments: [],
+            },
+          ]);
+        } else if (eventType === "tool_completed") {
+          const payload = parsed.payload || {};
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: nextMsgId(),
+              role: "system",
+              content: `✓ Tool ${payload.tool} returned (${payload.duration_ms}ms): ${payload.summary || "ok"}`,
+              createdAt: new Date().toISOString(),
+              streaming: false,
+              runId,
+              outcome: null,
+              attachments: [],
+            },
+          ]);
+        } else if (eventType === "guardrail") {
+          const payload = parsed.payload || {};
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: nextMsgId(),
+              role: "system",
+              content: `🛡️ Guardrail [${payload.stage}]: ${payload.decision === "allow" ? "Passed" : "Blocked"} (${payload.rule}) — ${payload.reason}`,
+              createdAt: new Date().toISOString(),
+              streaming: false,
+              runId,
+              outcome: null,
+              attachments: [],
+            },
+          ]);
         } else if (eventType === "run_completed") {
           setIsStreaming(false);
-          setAgentStatus("complete");
+          updateStatus("complete");
           eventSource.close();
 
-          // Fetch full enriched run record to update Dashboard panels (audit, verified path, metrics)
           fetch(`/api/runs/${runId}`)
             .then((res) => (res.ok ? res.json() : null))
             .then((data) => {
@@ -144,21 +248,34 @@ export function Sidebar() {
             })
             .catch((err) => console.error("Failed to load run details:", err));
 
-          // Add final assistant message with explanation
-          const newMessage: ChatMessage = {
-            id: nextMsgId(),
-            role: "assistant",
-            content: (parsed.payload?.explanation as string) || "Run completed",
-            createdAt: new Date().toISOString(),
-            streaming: false,
-            runId: runId,
-            outcome: ((parsed.payload?.outcome as string) || "complete") as any,
-            attachments: [],
-          };
-          setMessages((prev) => [...prev, newMessage]);
+          // Seal the streaming assistant message if tokens were already written
+          if (assistantMsgId) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId
+                  ? { ...m, streaming: false, outcome: (parsed.payload?.outcome as any) || "complete" }
+                  : m
+              )
+            );
+          } else {
+            const finalAnswer = (parsed.payload?.answer as string) || (parsed.payload?.explanation as string) || "Run completed";
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: nextMsgId(),
+                role: "assistant",
+                content: finalAnswer,
+                createdAt: new Date().toISOString(),
+                streaming: false,
+                runId: runId,
+                outcome: (parsed.payload?.outcome as any) || "complete",
+                attachments: [],
+              },
+            ]);
+          }
         } else if (eventType === "run_failed" || eventType === "run_cancelled") {
           setIsStreaming(false);
-          setAgentStatus(eventType === "run_failed" ? "failed" : "cancelled");
+          updateStatus(eventType === "run_failed" ? "failed" : "cancelled");
           eventSource.close();
 
           fetch(`/api/runs/${runId}`)
@@ -168,119 +285,23 @@ export function Sidebar() {
             })
             .catch((err) => console.error("Failed to load run details:", err));
 
-          const newMessage: ChatMessage = {
-            id: nextMsgId(),
-            role: "assistant",
-            content: (parsed.payload?.error as string) || `Run ${eventType === "run_failed" ? "failed" : "cancelled"}`,
-            createdAt: new Date().toISOString(),
-            streaming: false,
-            runId: runId,
-            outcome: eventType,
-            attachments: [],
-          };
-          setMessages((prev) => [...prev, newMessage]);
-        } else if (eventType === "intent_detected") {
-          const payload = parsed.payload || {};
-          const content = `Intent detected: ${payload.src_host} -> ${payload.dst_host}, max latency: ${payload.max_latency_ms}ms, traffic class: ${payload.traffic_class}`;
+          const errorMsg = (parsed.payload?.error as string) || (parsed.payload?.reason as string) || `Run ${eventType}`;
           setMessages((prev) => [
             ...prev,
             {
               id: nextMsgId(),
-              role: "system",
-              content,
+              role: "assistant",
+              content: errorMsg,
               createdAt: new Date().toISOString(),
               streaming: false,
-              runId,
-              outcome: null,
-              attachments: [],
-            },
-          ]);
-        } else if (eventType === "evidence_assessed") {
-          const payload = parsed.payload || {};
-          const content = `Evidence: ${payload.summary || "collected"} (sufficient: ${payload.sufficient}, confidence: ${payload.confidence})`;
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: nextMsgId(),
-              role: "system",
-              content,
-              createdAt: new Date().toISOString(),
-              streaming: false,
-              runId,
-              outcome: null,
-              attachments: [],
-            },
-          ]);
-        } else if (eventType === "diagnosis_summary") {
-          const payload = parsed.payload || {};
-          const content = `Diagnosis: ${payload.summary || "completed"}`;
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: nextMsgId(),
-              role: "system",
-              content,
-              createdAt: new Date().toISOString(),
-              streaming: false,
-              runId,
-              outcome: null,
-              attachments: [],
-            },
-          ]);
-        } else if (eventType === "validation_completed") {
-          const payload = parsed.payload || {};
-          const content = `Safety validation: ${payload.status} (risk: ${payload.risk_level}, checks passed: ${payload.checks_passed})`;
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: nextMsgId(),
-              role: "system",
-              content,
-              createdAt: new Date().toISOString(),
-              streaming: false,
-              runId,
-              outcome: null,
-              attachments: [],
-            },
-          ]);
-        } else if (eventType === "execution_completed") {
-          const payload = parsed.payload || {};
-          const content = `Execution: ${payload.status} (rules installed: ${payload.flow_rules_installed})`;
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: nextMsgId(),
-              role: "system",
-              content,
-              createdAt: new Date().toISOString(),
-              streaming: false,
-              runId,
-              outcome: null,
-              attachments: [],
-            },
-          ]);
-        } else if (eventType === "verification_completed") {
-          const payload = parsed.payload || {};
-          const content = `Verification: ${payload.status} (intent satisfied: ${payload.intent_satisfied}, before: ${payload.before_ms}ms, after: ${payload.after_ms}ms)`;
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: nextMsgId(),
-              role: "system",
-              content,
-              createdAt: new Date().toISOString(),
-              streaming: false,
-              runId,
-              outcome: null,
+              runId: runId,
+              outcome: eventType,
               attachments: [],
             },
           ]);
         }
       };
 
-      // One listener per event type the backend can emit, all sharing
-      // `handleFrame`. `message` is included so an unnamed frame still works
-      // if the backend ever emits one.
       const EVENT_TYPES = [
         "message",
         "run_started",
@@ -289,49 +310,47 @@ export function Sidebar() {
         "run_cancelled",
         "step_started",
         "step_completed",
+        "thinking",
+        "token",
+        "tool_started",
+        "tool_completed",
+        "guardrail",
         "intent_detected",
         "evidence_assessed",
         "diagnosis_summary",
         "validation_completed",
         "execution_completed",
         "verification_completed",
-        "tool_started",
-        "tool_completed",
         "note",
       ] as const;
 
-      const listeners = EVENT_TYPES.map((type) => {
-        const listener = (event: MessageEvent<string>) => {
+      EVENT_TYPES.forEach((type) => {
+        eventSource.addEventListener(type, (event: MessageEvent<string>) => {
           try {
             const parsed = JSON.parse(event.data);
-            console.log("SSE event:", type, parsed);
             handleFrame(parsed);
           } catch (e) {
             console.error("Failed to parse SSE event:", e, event);
           }
-        };
-        eventSource.addEventListener(type, listener as EventListener);
-        return [type, listener] as const;
+        });
       });
 
       eventSource.onerror = () => {
-        // ReadyState CLOSED after a terminal event is a normal end of stream,
-        // not a failure. Only a genuine drop is reported as one.
         if (eventSource.readyState === EventSource.CLOSED) {
           eventSource.close();
           setIsStreaming(false);
-          setAgentStatus((prev) => (prev === "idle" ? "idle" : prev));
+          updateStatus("idle");
           return;
         }
         eventSource.close();
         setIsStreaming(false);
-        setAgentStatus("failed");
+        updateStatus("failed");
       };
     } catch (error) {
       console.error("Failed to send message:", error);
-      setAgentStatus("failed");
+      updateStatus("failed");
     }
-  }, []);
+  }, [nextMsgId, setCurrentRun, updateStatus]);
 
   const [activeTab, setActiveTab] = useState<"chat" | "activity" | "details">("chat");
 
@@ -343,7 +362,7 @@ export function Sidebar() {
           <button
             type="button"
             onClick={() => setActiveTab("chat")}
-            className={`pb-2.5 text-[13px] font-semibold transition-colors relative ${
+            className={`pb-2 text-[12.5px] font-semibold transition-colors relative ${
               activeTab === "chat" ? "text-[var(--brand)]" : "text-[var(--ink-3)] hover:text-[var(--ink)]"
             }`}
           >
@@ -356,7 +375,7 @@ export function Sidebar() {
           <button
             type="button"
             onClick={() => setActiveTab("activity")}
-            className={`pb-2.5 text-[13px] font-medium transition-colors relative ${
+            className={`pb-2 text-[12.5px] font-medium transition-colors relative ${
               activeTab === "activity" ? "text-[var(--brand)] font-semibold" : "text-[var(--ink-3)] hover:text-[var(--ink)]"
             }`}
           >
@@ -369,7 +388,7 @@ export function Sidebar() {
           <button
             type="button"
             onClick={() => setActiveTab("details")}
-            className={`pb-2.5 text-[13px] font-medium transition-colors relative ${
+            className={`pb-2 text-[12.5px] font-medium transition-colors relative ${
               activeTab === "details" ? "text-[var(--brand)] font-semibold" : "text-[var(--ink-3)] hover:text-[var(--ink)]"
             }`}
           >
@@ -379,19 +398,6 @@ export function Sidebar() {
             )}
           </button>
         </div>
-
-        <button
-          type="button"
-          className="text-[var(--ink-4)] hover:text-[var(--ink-2)] pb-2"
-          title="Expand"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <polyline points="15 3 21 3 21 9" />
-            <polyline points="9 21 3 21 3 15" />
-            <line x1="21" y1="3" x2="14" y2="10" />
-            <line x1="3" y1="21" x2="10" y2="14" />
-          </svg>
-        </button>
       </div>
 
       {/* Main Tab Content */}
