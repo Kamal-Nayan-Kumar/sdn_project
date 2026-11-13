@@ -348,6 +348,11 @@ def _get_network_snapshot(p: GetNetworkSnapshotInput,
             utilization_pct=float(l.get("utilization_pct", 0.0)),
             capacity_mbps=float(l.get("capacity_mbps", 1000)),
             latency_ms=float(l.get("delay_ms")) if l.get("delay_ms") else None,
+            # The lab marks a link that the congestion scenario is holding
+            # "down". Dropping that field made every link look operational in
+            # the domain snapshot, so the safety validator's
+            # `all_links_operational` check could never see the bottleneck.
+            status=l.get("status", "up"),
             measured_at=datetime.fromtimestamp(
                 raw.get("measured_at", 0), tz=timezone.utc) if raw.get("measured_at") else _now(),
         )

@@ -90,6 +90,7 @@ class CongestionRequest(BaseModel):
     link_id: str = Field(default="s2-s4")
     rate_mbps: float = Field(default=400.0, gt=0)
     duration_seconds: float = Field(default=0.0, ge=0)
+    report_degraded: bool = True
 
 
 @router.post("/scenarios/congestion")
@@ -98,9 +99,58 @@ def start_congestion(request: Annotated[CongestionRequest | None, Body()] = None
     body = request or CongestionRequest()
     try:
         return _client().start_congestion(
-            body.link_id, body.rate_mbps, body.duration_seconds)
+            body.link_id, body.rate_mbps, body.duration_seconds,
+            report_degraded=getattr(body, "report_degraded", True))
     except LabUnavailable as exc:
         raise _or_503(exc, "start congestion") from exc
+
+
+class BackgroundLoadRequest(BaseModel):
+    """Body of a background-load request (measured utilisation load)."""
+
+    src_host: str = Field(default="h2")
+    dst_host: str = Field(default="h4")
+    rate_mbps: float = Field(default=5.0, gt=0)
+    duration_seconds: float = Field(default=0.0, ge=0)
+
+
+@router.post("/scenarios/background_load")
+def start_background_load(
+    request: Annotated[BackgroundLoadRequest | None, Body()] = None
+) -> dict:
+    """Start a measured UDP traffic source in the network lab."""
+    body = request or BackgroundLoadRequest()
+    try:
+        return _client().start_background_load(
+            body.src_host, body.dst_host, body.rate_mbps,
+            body.duration_seconds)
+    except LabUnavailable as exc:
+        raise _or_503(exc, "start background load") from exc
+
+
+@router.post("/scenarios/background_load/stop")
+def stop_background_load() -> dict:
+    try:
+        return _client().stop_background_load()
+    except LabUnavailable as exc:
+        raise _or_503(exc, "stop background load") from exc
+
+
+class LinkCapacityRequest(BaseModel):
+    """Body of a link-capacity reconfiguration request."""
+
+    link_id: str = Field(default="s2-s4")
+    capacity_mbps: float = Field(default=100.0, gt=0)
+
+
+@router.post("/scenarios/link_capacity")
+def set_link_capacity(request: Annotated[LinkCapacityRequest | None, Body()] = None) -> dict:
+    """Reconfigure a link's configured capacity in the lab (S7 only)."""
+    body = request or LinkCapacityRequest()
+    try:
+        return _client().set_link_capacity(body.link_id, body.capacity_mbps)
+    except LabUnavailable as exc:
+        raise _or_503(exc, "set link capacity") from exc
 
 
 @router.post("/scenarios/monitor")

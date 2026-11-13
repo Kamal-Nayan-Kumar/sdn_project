@@ -9,11 +9,11 @@ Topology (diamond with a long avoidance hop):
 
 Concretely, the switch fabric is:
 
-    s1 --- s2  5 ms   congestible: the short video route
-    s1 --- s3  8 ms
-    s2 --- s3  5 ms
-    s2 --- s4  5 ms   congestible: the controlled bottleneck
-    s3 --- s4 12 ms   the long avoidance hop
+    s1 --- s2  4 ms   congestible: the short video route
+    s1 --- s3  5 ms
+    s2 --- s3  4 ms
+    s2 --- s4  4 ms   congestible: the controlled bottleneck
+    s3 --- s4  7 ms   the long avoidance hop
 
 Host attachments:
     h1 -> s1:1  video source
@@ -21,8 +21,11 @@ Host attachments:
     h3 -> s4:1  voice host, protected-flow endpoint
     h4 -> s4:2  video destination
 
-The shortest video path h1->h4 is  s1-s2-s4  (~21 ms ping RTT).
-The best congestion-free alternative is  s1-s3-s4  (~41 ms ping RTT).
+The shortest video path h1->h4 is  s1-s2-s4  (8 ms of configured one-way
+switch-link delay; ~29 ms measured ping RTT once the datapath's own
+processing cost is included).
+The best congestion-free alternative is  s1-s3-s4  (12 ms one-way; ~37 ms
+measured RTT).
 Both stay under the 50 ms video intent, so the reroute is a real fix and
 not a trade of one violation for another.
 
@@ -44,14 +47,14 @@ from dataclasses import dataclass, field
 #: keeping every alternative path comfortably under the 50 ms video intent
 #: while the congested shortest path inflates well past it.
 SWITCH_LINKS: dict[str, dict[str, object]] = {
-    # Shortest video route h1->s1->s2->s4->h4 (8 ms configured, ~22 ms RTT).
+    # Shortest video route h1->s1->s2->s4->h4 (8 ms configured one-way).
     "s1-s2": {"capacity_mbps": 1000, "delay_ms": 4, "congestible": True},
     # s2-s4 is the single controlled bottleneck of the congestion scenario.
-    "s2-s4": {"capacity_mbps": 1000, "delay_ms": 4, "congestible": True},
+    "s2-s4": {"capacity_mbps": 100, "delay_ms": 4, "congestible": True},
     # Diagonal that lets one alternative hop over the bottleneck.
     "s1-s3": {"capacity_mbps": 1000, "delay_ms": 5, "congestible": False},
     "s2-s3": {"capacity_mbps": 1000, "delay_ms": 4, "congestible": False},
-    # The long avoidance hop: s1-s3-s4 = 12 ms -> ~34 ms RTT.
+    # The long avoidance hop: s1-s3-s4 = 12 ms one-way -> ~37 ms RTT.
     "s3-s4": {"capacity_mbps": 1000, "delay_ms": 7, "congestible": False},
 }
 

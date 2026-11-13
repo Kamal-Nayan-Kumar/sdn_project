@@ -1,0 +1,146 @@
+{
+  "nodes": [
+    {
+      "id": "h1",
+      "kind": "host",
+      "label": "h1",
+      "ip": "10.0.0.1/24",
+      "mac": "00:00:00:00:00:01",
+      "role": "video_source"
+    },
+    {
+      "id": "h2",
+      "kind": "host",
+      "label": "h2",
+      "ip": "10.0.0.2/24",
+      "mac": "00:00:00:00:00:02",
+      "role": "background_source"
+    },
+    {
+      "id": "h3",
+      "kind": "host",
+      "label": "h3",
+      "ip": "10.0.0.3/24",
+      "mac": "00:00:00:00:00:03",
+      "role": "voice_source"
+    },
+    {
+      "id": "h4",
+      "kind": "host",
+      "label": "h4",
+      "ip": "10.0.0.4/24",
+      "mac": "00:00:00:00:00:04",
+      "role": "video_sink"
+    },
+    {
+      "id": "s1",
+      "kind": "switch",
+      "label": "s1"
+    },
+    {
+      "id": "s2",
+      "kind": "switch",
+      "label": "s2"
+    },
+    {
+      "id": "s3",
+      "kind": "switch",
+      "label": "s3"
+    },
+    {
+      "id": "s4",
+      "kind": "switch",
+      "label": "s4"
+    }
+  ],
+  "links": [
+    {
+      "id": "s1-s2",
+      "source": "s1",
+      "target": "s2",
+      "capacity_mbps": 1000,
+      "delay_ms": 4,
+      "status": "up",
+      "congestible": true
+    },
+    {
+      "id": "s2-s4",
+      "source": "s2",
+      "target": "s4",
+      "capacity_mbps": 100,
+      "delay_ms": 4,
+      "status": "up",
+      "congestible": true
+    },
+    {
+      "id": "s1-s3",
+      "source": "s1",
+      "target": "s3",
+      "capacity_mbps": 1000,
+      "delay_ms": 5,
+      "status": "up",
+      "congestible": false
+    },
+    {
+      "id": "s2-s3",
+      "source": "s2",
+      "target": "s3",
+      "capacity_mbps": 1000,
+      "delay_ms": 4,
+      "status": "up",
+      "congestible": false
+    },
+    {
+      "id": "s3-s4",
+      "source": "s3",
+      "target": "s4",
+      "capacity_mbps": 1000,
+      "delay_ms": 7,
+      "status": "up",
+      "congestible": false
+    },
+    {
+      "id": "h1-s1",
+      "source": "h1",
+      "target": "s1",
+      "capacity_mbps": 1000.0,
+      "delay_ms": 0.1,
+      "status": "up",
+      "congestible": false,
+      "kind": "access"
+    },
+    {
+      "id": "h2-s1",
+      "source": "h2",
+      "target": "s1",
+      "capacity_mbps": 1000.0,
+      "delay_ms": 0.1,
+      "status": "up",
+      "congestible": false,
+      "kind": "access"
+    },
+    {
+      "id": "h3-s4",
+      "source": "h3",
+      "target": "s4",
+      "capacity_mbps": 1000.0,
+      "delay_ms": 0.1,
+      "status": "up",
+      "congestible": false,
+      "kind": "access"
+    },
+    {
+      "id": "h4-s4",
+      "source": "h4",
+      "target": "s4",
+      "capacity_mbps": 1000.0,
+      "delay_ms": 0.1,
+      "status": "up",
+      "congestible": false,
+      "kind": "access"
+    }
+  ],
+  "controller": "ryu (OpenFlow 1.3)",
+  "switch_backend": "of13-user-space",
+  "captured_at": 1794389025.241496
+}

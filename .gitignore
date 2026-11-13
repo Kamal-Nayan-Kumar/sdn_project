@@ -81,3 +81,6 @@ test-results/
 *.png
 .venv
 network-lab/controller/ryu-src
+
+# --- submission build artifacts (rebuilt by make_packages.sh / staging) ---
+final_submission/submission/*.zip

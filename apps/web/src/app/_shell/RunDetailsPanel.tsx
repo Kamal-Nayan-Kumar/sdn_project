@@ -33,6 +33,10 @@ export function RunDetailsPanel() {
 
   const outcomeStr = String(currentRun.outcome || "");
   const isSuccess = outcomeStr === "intent_satisfied" || outcomeStr === "complete" || outcomeStr === "success";
+  // `no_better_path` is a correct no-op: the agent found that no alternative
+  // route carries less delay than the one in use and declined to change the
+  // network. It is neither a success nor a failure.
+  const isDeclined = outcomeStr === "no_better_path";
   const isFailed = outcomeStr === "recovery_failed" || outcomeStr === "failed" || outcomeStr === "error";
 
   return (
@@ -49,6 +53,8 @@ export function RunDetailsPanel() {
                 ? "bg-[var(--green-soft)] text-[var(--green-state)]"
                 : isFailed
                 ? "bg-[var(--red-soft)] text-[var(--red-state)]"
+                : isDeclined
+                ? "bg-[var(--blue-soft)] text-[var(--blue-deep)]"
                 : "bg-[var(--yellow-soft)] text-[var(--yellow-state)]"
             }`}
           >

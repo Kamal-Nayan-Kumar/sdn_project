@@ -1,0 +1,9 @@
+scenario,trials,outcomes,after_latency_min,after_latency_mean,after_latency_max,wall_clock_min_s,wall_clock_mean_s,wall_clock_max_s,paths
+baseline_healthy,1,intent_satisfied=1,,,,2.88,2.88,2.88,
+congestion_recovery,5,intent_satisfied=5,25.224,25.286,25.403,7.262,7.766,9.185,s1-s3-s4
+congestion_partial,5,partial_improvement=5,25.323,25.377,25.418,7.495,7.754,8.267,s1-s3-s4
+degraded_no_oracle,5,intent_satisfied=5,25.365,27.224,34.589,7.308,7.973,9.207,s1-s3-s4
+healthy_impossible_target,1,no_better_path=1,,,,4.991,4.991,4.991,
+guardrail_blocked,1,guardrail_blocked=1,,,,0.022,0.022,0.022,
+lab_offline,1,lab_offline=1,,,,1.117,1.117,1.117,
+offered_load_congestion,5,intent_satisfied=5,25.338,25.529,25.735,7.371,8.8,12.217,s1-s3-s4

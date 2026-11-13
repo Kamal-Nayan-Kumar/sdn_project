@@ -1,0 +1,829 @@
+% Response to the Google Deep Review — Round 3
+% For "Trustworthy Agentic Automation for Intent-Based Self-Healing in
+% Software-Defined Networks: Three Deterministic Gates around a Bounded Agent"
+%
+% Compile with:  tectonic REVISION_REPORT_ROUND3.tex
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1.9cm]{geometry}
+\usepackage{mathptmx}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,longtable,array,colortbl}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{fancyhdr,titlesec}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+\emergencystretch=2.5em
+\sloppy
+
+\definecolor{ink}{HTML}{1F2A44}
+\definecolor{accent}{HTML}{0F5EA8}
+\definecolor{quote}{HTML}{5A6B7C}
+
+\hypersetup{
+  pdftitle={Response to the Google Deep Review --- Round 3},
+  pdfauthor={The author},
+  colorlinks=true, urlcolor=accent, linkcolor=accent, citecolor=accent}
+
+\titleformat{\section}{\Large\bfseries\color{ink}}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries\color{ink}}{\thesubsection}{0.8em}{}
+\setlist{nosep,topsep=3pt}
+
+\pagestyle{fancy}
+\fancyhead[L]{\small\color{quote}Response to the Google Deep Review --- Round 3}
+\fancyhead[R]{\small\color{quote}\thepage}
+\fancyfoot{}
+
+% Numbers quoted from the boundary probe (final_submission/data/boundary_probe.csv).
+\newcommand{\ProbeTotal}{20}
+\newcommand{\ProbeApproved}{13}
+\newcommand{\ProbeRejected}{7}
+\newcommand{\ProbeTelApproved}{8}
+\newcommand{\ProbeTelN}{8}
+\newcommand{\ProbeTelCross}{0}
+\newcommand{\ProbeTopoN}{8}
+\newcommand{\ProbeTopoApproved}{5}
+\newcommand{\ProbeTopoCross}{2}
+\newcommand{\ProbeTopoFaultyApproved}{0}
+\newcommand{\ProbeCraftedN}{4}
+\newcommand{\ProbeCraftedApproved}{0}
+\newcommand{\ProbeStrong}{3}
+\newcommand{\ProbeStrongApproved}{0}
+\newcommand{\PromptCases}{6}
+
+\newenvironment{reviewer}{\par\medskip\noindent\begin{minipage}{\linewidth}\small\itshape\color{quote}\textbf{Reviewer:}\par}{\end{minipage}\medskip\par}
+\newenvironment{response}{\par\noindent\begin{minipage}{\linewidth}\small\textbf{Response.}\par}{\end{minipage}\medskip\par}
+
+\begin{document}
+
+\begin{titlepage}
+\vspace*{2.8cm}
+{\color{ink}\Huge\bfseries Response to the Google Deep Review\\[0.3em]\bigskip}
+{\color{ink}\Large Round 3 Report\bigskip}
+{\color{ink}\large\bfseries
+\emph{Trustworthy Agentic Automation for Intent-Based Self-Healing in
+Software-Defined Networks: Three Deterministic Gates around a Bounded Agent}\\[0.6em]}
+{\large Revised submission, November 2026}
+
+\vspace{1.2cm}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Round 3 review} & \texttt{final\_submission/GA\_DEEP\_REVIEW\_ROUND3.pdf} \\
+\textbf{Review source} & \texttt{GA\_DEEP\_REVIEW\_ROUND3.md} (byte-identical to the pasted text) \\
+\textbf{Revised paper} & \texttt{final\_submission/paper/paper.pdf} \\
+\textbf{Round 1 / 2 letters} & \texttt{REVISION\_REPORT.pdf}, \texttt{REVISION\_REPORT\_ROUND2.pdf} \\
+\textbf{One command} & \texttt{bash final\_submission/scripts/reproduce.sh} \\
+\bottomrule
+\end{tabular}
+
+\vspace{1.5cm}
+\noindent\textbf{A note on how to read this document.}
+
+Every Round~3 comment is reproduced in the reviewer's words (lightly
+trimmed, never paraphrased beyond recognition) and followed by a numbered
+response stating what changed and where to check it. The review's own
+structure is kept. Two of the responses are longer than the rest, and they
+are the two we would most like a re-reader to look at: the review found
+that our own adversarial probe of the request screen and of the
+clarification branch was missing two behaviours, and both were fixed with
+regression tests before this letter was written (\S2.4 and \S2.6). Where we
+did not change the artifact, we say so and why; where we changed only the
+paper, we say that too.
+
+\vfill
+\end{titlepage}
+
+\section{Summary of changes, and what the review actually found}
+
+The Round~3 review confirmed the artifact's structure and its honesty---it
+verifies the internal arithmetic of Tables~II--VIII against Eq.~(2) and
+finds it consistent---and then identified five substantive gaps.
+
+\begin{enumerate}
+  \item \textbf{The framing of the contribution.} The review is right that
+    the paper's related work conflated three different families of prior
+    systems, and that our claim (``none gates the action on a post-change
+    measured outcome verdict'') was too broad as written. Section~II-C now
+    separates deterministic closed-loop reconciliation (ONOS IMR),
+    pre-deployment configuration synthesis (Lumi, NetConfEval) and
+    model-centred orchestration with external checkers (Confucius,
+    Protogeros et al., STRATUS), states the contribution beside them rather
+    than against them, and says plainly that our empirical comparison is
+    against internal ablations, not against an external agent.
+  \item \textbf{The suspect set is conservative and can starve the planner.}
+    Eq.~(5) demands a candidate be edge-disjoint from the whole current
+    path, which is satisfiable in a ring but not in a topology with a cut
+    edge. We did not change the rule (Section~4.1 explains why, and what
+    the alternative would break); we now state the constraint, its
+    consequence, and the refinement we intend (excess-delay criterion, or a
+    top-$k$ prefix) in Section~X and roadmap item~4.
+  \item \textbf{The specification had gaps.} The improvement predicate
+    $D(p)<D(p_{\mathrm{cur}})$ was in Algorithm~1 but not in
+    Section~V; the evidence-sufficiency verdict, the protected-flow tuple
+    and its configured thresholds, and the provenance of $d^{\mathrm{eff}}_e$
+    were prose rather than formulas; the empty-candidate-set branch and the
+    \texttt{lab\_offline} branch were not visible in Algorithm~1. All of
+    these are now stated formally (\S3.1--\S3.5).
+  \item \textbf{Gate~2's rejection path was never exercised.} The review is
+    right: every scenario that reached Gate~2 passed 9/9, because the
+    planner filters candidates first. We have now measured the rejection
+    path on the live lab by bypassing the planner (\S2.7 and the new
+    Section~VIII-C), and the result is more interesting than we expected:
+    the backstop that fires is Check~5, not Check~6, and the review's
+    proposed stronger predicate would have caught exactly the faulty
+    proposals and nothing else.
+  \item \textbf{The LLM study was narrow, and two of our own behaviours
+    were wrong.} The review is right that eight canonical messages cannot
+    distinguish a model from a keyword parser, and right that the S7
+    scenario still uses an injected delay to breach the intent. We added a
+    prompt-robustness experiment (six request shapes) and a boundary probe
+    (the model as an untrusted planner), and the probe found two real
+    defects in our own code, both now fixed with regression tests.
+\end{enumerate}
+
+\noindent Every number quoted in the revised paper is generated from the
+recorded data by \texttt{make\_paper\_tables.py},
+\texttt{make\_llm\_table.py} and \texttt{make\_probe\_table.py}; none is
+typed by hand.
+
+\section{Framing and related work}
+
+\subsection{Positioning against prior closed-loop and verifier-gated agentic
+systems (Section II-C and Section II-D)}
+
+\begin{reviewer}
+Neither ONOS IMR nor Lumi operates an autonomous LLM-centred loop \dots
+Grouping them under the summary statement risks conflating classical
+closed-loop SDN intent rerouting and pre-LLM intent compilation with
+LLM-in-the-loop configuration synthesis. \dots explicitly clarifying that
+the empirical comparisons are designed to isolate internal architectural
+components via ablations rather than benchmark against external agent
+loops would align the related-work framing with the evaluation setup.
+\end{reviewer}
+
+\begin{response}
+Accepted in full, and Section~II-C has been rewritten around the three
+families the review names: (i) deterministic closed-loop reconciliation
+(ONOS IMR monitors an installed intent and re-installs it on an alternate
+path when a constraint is violated; no model, no post-mutation outcome
+verdict, no refusal taxonomy); (ii) pre-deployment configuration synthesis
+(Lumi compiles a natural-language intent through Nile and requires
+operator confirmation; NetConfEval benchmarks configuration correctness);
+(iii) model-centred orchestration with external checkers (Confucius,
+Protogeros et al., and STRATUS, which we add with its
+\emph{Transactional No-Regression} safety specification---the closest
+published statement of the property our gates approximate, and the work
+whose rollback discipline ours does not yet have). Our contribution is now
+stated as sitting beside the three, and the sentence the review quoted
+(``none gates the action on a post-change measured outcome verdict'') has
+been replaced by the narrower, accurate version.
+
+The second half of the comment is accepted as well: Section~II-C now says
+in terms that the evaluation compares the system against \emph{internal}
+single-component ablations, not against an external closed-loop rerouting
+service or an external verifier-in-the-loop agent, and Section~VIII-C
+(which is new) is identified as the closest thing to an external
+comparison this artifact offers---an untrusted planner (the model)
+proposing paths into Gate~2.
+\end{response}
+
+\subsection{Duplicated paragraph in Section II-D}
+
+\begin{reviewer}
+The second and third paragraphs of Section II-D are nearly verbatim
+duplicates of one another \dots Consolidating these two draft versions into
+a single cohesive paragraph will remove the redundancy.
+\end{reviewer}
+
+\begin{response}
+Correct, and it was our own editing error from the previous round (the
+model-in-the-loop paragraph was added without removing the paragraph it
+replaced). The two paragraphs are now one, and the merged paragraph
+carries both the scope statement and the pointer to Section~VIII-B.
+\end{response}
+
+\subsection{Broken cross-references to ``Section VIII-E'' and to the ablations}
+
+\begin{reviewer}
+Across the Abstract and Sections I, II-D, X and XI, the text repeatedly
+directs the reader to Section VIII-E \dots the manuscript's actual
+structure has Section VIII-B \dots references to ``Section VIII'' when
+pointing forward to the ablation results should be Section IX.
+\end{reviewer}
+
+\begin{response}
+Fixed: every reference to the replication is now Section~VIII-B, the
+reference to the new boundary probe is Section~VIII-C, and the pointers to
+the ablations are Section~IX. The reviewer is also right that the
+structure was confusing because the new subsection was inserted as
+``VIII-B'' while the ablations live in Section~IX; we have kept the
+ablations where they are and now name them explicitly.
+\end{response}
+
+\subsection{Ambiguous gate numbering in Section II-C}
+
+\begin{reviewer}
+``our second gate'' in this sentence refers to the second gate discussed
+within that specific paragraph rather than Gate~2 of the system
+architecture \dots Referring to it explicitly as ``our verification gate
+(Gate~3)'' would eliminate this ambiguity.
+\end{reviewer}
+
+\begin{response}
+Fixed: the sentence now reads ``our verification gate (Gate~3) is placed
+after the mutation rather than before it''.
+\end{response}
+
+\subsection{Minor: title formatting}
+
+\begin{reviewer}
+The subtitle begins with a lowercase ``in'' on a new line in a smaller
+font \dots Moving ``in Software-Defined Networks'' into the main title
+before the colon would improve visual consistency.
+\end{reviewer}
+
+\begin{response}
+Done: the title is now ``Trustworthy Agentic Automation for Intent-Based
+Self-Healing in Software-Defined Networks: Three Deterministic Gates
+around a Bounded Agent'', set in one line break, with the colon clause
+as the second line.
+\end{response}
+
+\section{System model, mathematical formulation and the guarded recovery
+algorithm}
+
+\subsection{Topological brittleness and the unused ordering of the suspect
+set}
+
+\begin{reviewer}
+Equation (5) strictly disqualifies any candidate path sharing even a
+single edge with $C_{\mathrm{susp}}$ \dots the planner is mathematically
+incapable of finding a valid recovery path in any realistic network
+topology where the source or destination switch connects to the core via a
+single healthy aggregation uplink (a cut-edge/bridge). \dots the sorting
+step has no mathematical effect \dots Explicitly acknowledging this
+full-path disjointness constraint in Section X and noting in Roadmap Item 4
+or 6 that scaling to general topologies requires refining how
+$C_{\mathrm{susp}}$ is populated would also strengthen the scaling roadmap.
+\end{reviewer}
+
+\begin{response}
+The analysis is correct and we have adopted it, with one point of
+disagreement that we state rather than hide. We did \emph{not} change the
+rule in this round. The path-delay fallback names the links on the
+current path because the evidence gate must be able to name \emph{some}
+suspect for the run to have sufficient evidence at all: on a healthy
+network no link has excess delay, so an ``excess-delay only'' suspect set
+would be empty, Gate~1 would report insufficient evidence, and the
+confident no-op of scenario S1 would become an abstention---a worse
+system, and a change to the semantics of every scenario. The repair is
+therefore a \emph{separation}: a diagnostic suspect set (for evidence and
+for reporting) and an exclusion set (for the planner's Eq.~(5)), the
+latter restricted to links whose effective delay exceeds their configured
+baseline, with a top-$k$ fallback. That is roadmap item~4 as rewritten.
+
+What has changed in this revision:
+
+\begin{itemize}
+  \item Section~VI-B now says explicitly that the ordering of
+    $C_{\mathrm{susp}}$ is a reporting order only, because Eq.~(5)
+    consumes the set unweighted---we agree with the review that the
+    sorting has no mathematical effect on filtering or scoring.
+  \item Section~X carries the starvation consequence as a first-class
+    limitation: on a topology with a cut edge between the two access
+    switches, no candidate is edge-disjoint from the current path, and the
+    agent would decline to act although a repair around the degraded link
+    exists. The four-switch ring happens to have a fully edge-disjoint
+    alternative, which is why the scenarios work here.
+  \item Roadmap item~4 now names the refinement (excess-delay criterion or
+    top-$k$ prefix) as the work required before the evaluation is ported
+    to larger topologies, and item~6 repeats the constraint.
+\end{itemize}
+\end{response}
+
+\subsection{Discrepancies between Section V and Algorithm 1}
+
+\begin{reviewer}
+Four specification gaps: the strict delay-improvement pre-filter is
+omitted from the mathematical formulation; upstream exclusion versus
+$+\infty$ scoring is ambiguous, and Check 6 consequently passes vacuously
+for every candidate reaching line 22 across all scenarios; the branch when
+$\mathcal{P}_c=\varnothing$ entering validate is ambiguous; and
+\texttt{lab\_offline} is unreachable in the pseudocode.
+\end{reviewer}
+
+\begin{response}
+All four are fixed, and the third one is the most useful change in this
+round because it corrected a claim we had made in the previous revision.
+
+\begin{itemize}
+  \item \textbf{Improvement predicate.} Eq.~(5a) is new:
+    $\mathrm{improve}(p)\equiv D(p)<D(p_{\mathrm{cur}})$, stated in
+    Section~V-B as a pre-filter on the candidate set (not one of the nine
+    checks), with the recorded tag \texttt{not\_an\_improvement}.
+  \item \textbf{Upstream exclusion and Check~6.} Section~V-B now says that
+    Eq.~(5) is a filter, not only a score: the planner enumerates paths
+    that already avoid $C_{\mathrm{deg}}\cup C_{\mathrm{susp}}$, so a
+    suspect-crossing candidate never reaches Gate~2, and the $+\infty$
+    score of Eq.~(6) is what such a path would carry if it were scored
+    rather than filtered. Section~X now states the consequence in general
+    terms---the review is right that Check~6 passes vacuously for every
+    candidate Gate~2 actually sees, in every scenario, and not only in the
+    unflagged one---and Section~VIII-C measures what the backstop that
+    does fire (Check~5) would have done.
+  \item \textbf{Empty candidate set.} Algorithm~1 now has the explicit
+    branch: if $\mathcal{P}_c=\varnothing$ on entry, the run reports
+    \texttt{action\_rejected} (``no usable alternative path exists''); the
+    \texttt{no\_better\_path} outcome is reported only when at least one
+    recorded rejection is a non-improvement. The implementation agrees
+    with this reading (the code requires \texttt{no\_better\_path ==
+    len(rejected)}), and the old wording---which could be read as
+    vacuously true over an empty rejection set---is gone.
+  \item \textbf{\texttt{lab\_offline}.} Algorithm~1 now has the branch:
+    if the observation fails, $o\gets\texttt{lab\_offline}$ via
+    \texttt{abstain}, with the comment that the reason survives the
+    abstention.
+\end{itemize}
+\end{response}
+
+\subsection{Asymmetry in packet-loss handling between Gate 1 and Gate 3}
+
+\begin{reviewer}
+If a flow experiences severe packet loss while its surviving ping samples
+remain below the latency target, Gate 1 immediately returns
+\texttt{intent\_satisfied} \dots and if the agent is immediately re-run on
+that exact post-action state, Gate 1 and Gate 3 disagree \dots either
+update Gate 1's satisfaction condition or state explicitly that remediation
+is strictly latency-triggered.
+\end{reviewer}
+
+\begin{response}
+The review is right, and this was a genuine inconsistency rather than a
+presentation problem. We fixed it in the code rather than in the prose:
+Gate~1's satisfaction test now requires the loss predicate $L$ to hold as
+well as the latency verdict, and a flow whose loss exceeds a declared loss
+target is treated as violated---it goes to diagnosis instead of claiming
+the intent is met. (The intent evaluated in this paper declares no loss
+target for the video flow, so $L$ holds vacuously and no evaluated
+scenario changes behaviour; the protected voice flow's own $1\,\%$ loss
+budget is unaffected.) The new test
+\texttt{test\_a\_lossy\_flow\_is\_not\_reported\_as\_a\_satisfied\_intent}
+covers the three cases, and Algorithm~1 line~10 and Section~VI-B now show
+the condition $\neg v(f^-,I)\wedge L\wedge e=\texttt{sufficient}$.
+\end{response}
+
+\subsection{No independent safety backstop in Gate 2 for unflagged delay
+faults}
+
+\begin{reviewer}
+Check 6 only verifies $e\notin C_{\mathrm{deg}}$ and $u_e<80\%$; it
+neither checks $e\notin C_{\mathrm{susp}}$ nor enforces a bound on
+effective delay \dots specifying the exact formal predicate required to
+close this boundary within the existing observation model (such as
+requiring $e\notin C_{\mathrm{susp}}$, $d^{\mathrm{eff}}_e\le\alpha d_e$,
+or incorporating $D(p)<D(p_{\mathrm{cur}})$ directly as a numbered safety
+check in Gate 2) would align the mathematical formulation of Gate 2 with
+its stated role.
+\end{reviewer}
+
+\begin{response}
+Accepted and specified, and---because the review asked for the exact
+predicate rather than a promise---we also \emph{measured} what it would
+do. Section~V-C now states the closing predicate formally,
+$d^{\mathrm{eff}}_e\le\alpha d_e$ with $\alpha=2$ proposed (equivalently
+$E_p\cap C_{\mathrm{susp}}=\varnothing$, or Eq.~(5a) promoted to a tenth
+named check), and says plainly that the implementation does not yet enforce
+it.
+
+Section~VIII-C then reports the measurement: of the $\ProbeTotal$ paths put
+in front of Gate~2 with the planner bypassed, the excess-delay predicate
+flags exactly the $\ProbeStrong$ that cross the degraded bottleneck, and
+none of the paths it flags was approved by Gate~2
+($\ProbeStrongApproved$). In other words the predicate closes precisely
+the gap the probe found, with no false positives on this candidate set.
+Implementing it is roadmap item~4.
+\end{response}
+
+\subsection{Incomplete formal specification of the evidence verdict, the
+protected-flow set and the effective delay}
+
+\begin{reviewer}
+Section V-A does not provide a formal definition of $e(\Sigma, I)$
+specifying the exact numerical sanity criteria \dots the formal tuple
+structure of an element in $\mathcal{P}$ and the numerical thresholds
+configured for the protected voice flow are not stated \dots
+$d^{\mathrm{eff}}_e$ should be stated explicitly as a per-link state value
+reported directly by the lab API rather than inferred from host ICMP
+probes \dots clarifying that the effective delay of \texttt{s2-s4} is
+$44$~ms and that $48$~ms is $4+44$.
+\end{reviewer}
+
+\begin{response}
+All three are now stated, in the places the review names:
+
+\begin{itemize}
+  \item Section~V-A defines $e(\Sigma,I)$ as a six-item conjunction
+    (topology and endpoints present; the flow measured; age $\le 5$~s;
+    numeric sanity with explicit bounds; a nameable suspect link present in
+    both telemetry and topology; and the confidence floor), with the
+    confidence formula and the floor value.
+  \item Section~IV-A gives the protected-flow tuple
+    $q=(s_q,t_q,\tau_q,\ell_q,p_q)$ and the values the evaluated intent
+    declares for the voice flow ($20$~ms, $1\,\%$ loss, path
+    $[\texttt{h3},\texttt{s4},\texttt{h4}]$).
+  \item Section~IV-B now says explicitly that $d^{\mathrm{eff}}_e$ is a
+    per-link state value reported by the lab (configured delay plus any
+    injected delay), that it is not inferred by decomposing host ICMP round
+    trips, and that a real OpenFlow~1.3 switch does not measure per-link
+    one-way delay at all---with the consequence (our localisation reads a
+    field a deployment would not have) listed in Section~X and roadmap
+    item~4.
+  \item Section~VI-B gives the arithmetic explicitly:
+    $d^{\mathrm{eff}}_{s2\text{-}s4}=4+40=44$~ms and
+    $D(s1\text{-}s2\text{-}s4)=4+44=48$~ms.
+\end{itemize}
+\end{response}
+
+\subsection{Cross-artifact discrepancies: outcome count, box labels,
+suspect-set attribution}
+
+\begin{reviewer}
+Section VI-A states twice that there are ``thirteen nodes and ten
+outcomes'', whereas the Ensure header of Algorithm 1 lists eleven \dots
+Figure 2 splits \texttt{stop} into two red boxes and colours \texttt{finish}
+blue \dots the suspect set is attributed to the evidence gate in prose but
+to \texttt{diagnose} in Algorithm 1.
+\end{reviewer}
+
+\begin{response}
+All three fixed. The count is now ``thirteen nodes and eleven
+outcomes'', matching Algorithm~1's \texttt{Ensure} header. Figure~2's
+caption now states the mapping explicitly: the five red boxes are the five
+compiled terminal nodes drawn by \emph{outcome} rather than by node name
+(``stop (clarify)'' and ``rejected (a check failed)'' are two outcomes
+carried by the same \texttt{stop} node, together with the guardrail refusal
+and the clarification request), and \texttt{finish} is drawn in the main
+flow because it is reached only after verification. Algorithm~1's
+\texttt{diagnose} line now reads that $C_{\mathrm{susp}}$ is
+\emph{the suspect set named by Gate~1}.
+\end{response}
+
+\subsection{Minor corrections (system model and gates)}
+
+\begin{response}
+\begin{itemize}
+  \item ``The last two lines are the fallback for $n<2$'' is now ``the
+    last three lines''.
+  \item ``It does not read the gates's suspect set'' is now ``the gate's''.
+  \item The protected-flow set is $\mathcal{Q}$ and the boolean conjunction
+    is $Q$ throughout; the ambiguity the review saw in the paragraph is
+    gone, and Section~V-D now defines both.
+  \item Section~VI-A's pointer to Algorithm~1 now carries a page
+    reference.
+  \item The missing space in ``...abstained\_insufficient\_evidence.satisfied''
+    is fixed.
+\end{itemize}
+\end{response}
+
+\section{Experimental setup, results and ablations}
+
+\subsection{Confounding of offered-load saturation with \texttt{netem} delay
+in S7}
+
+\begin{reviewer}
+Retaining the \texttt{netem} delay means S7 does not isolate end-to-end
+detection and self-healing of an organic congestion-induced latency
+violation \dots the authors could isolate an organic offered-load SLA
+violation in S7 either by configuring a lower link rate with an explicit
+\texttt{tc-htb} or \texttt{tc-tbf} finite queue buffer on \texttt{s2-s4}
+(e.g.\ at $10$--$20$~Mbit/s) so that standing packet queues organically push
+RTT above $50$~ms without \texttt{netem}, or by evaluating S7 without
+\texttt{netem} delay against a tighter latency intent.
+\end{reviewer}
+
+\begin{response}
+The analysis is correct and we have adopted the review's own arithmetic
+rather than defending ours: Section~X now states that the background
+stream adds about $1.7$~ms to the phase mean and about $9.9$~ms to the
+agent's pre-action measurement, that without the injection the flow would
+sit at roughly $19$--$28$~ms and would not breach the $50$~ms intent at
+all, and that S7 therefore does \emph{not} show the agent detecting and
+healing a violation caused by queueing alone.
+
+We did not implement the shaped bottleneck in this round, for a reason we
+state rather than hide: the shaping changes the data plane's behaviour
+mid-scenario, and the artifact's correctness argument rests on its
+measurements being reproducible from a recorded run. Adding a
+queue-discipline experiment means re-validating every scenario against a
+network whose latency behaviour is now produced by the datapath's own
+scheduler, which is a larger change than the remaining review cycle
+allows. The review's recipe---an explicit \texttt{tc-htb} or
+\texttt{tc-tbf} at $10$--$20$~Mbit/s with a finite buffer---is now
+roadmap item~3, stated in those terms, and the limitation is stated in
+the paper. What S7 does establish, and what the paper now says it
+establishes, is the $\ge 80\%$ utilisation branch of the gates on live
+byte counters with no lab-side flag.
+\end{response}
+
+\subsection{Unexercised gate refusal branches, vacuous protected-flow
+isolation, and the telemetry dependency in S8}
+
+\begin{reviewer}
+Check 7 passes vacuously for every possible candidate path in the topology
+because $E_{\mathrm{prot}}=\emptyset$ \dots Gate 2 is never empirically
+shown rejecting an unsafe candidate, Gate 1 is never shown abstaining on
+stale or incomplete telemetry, and Gate 3 is never shown catching a
+post-action regression \dots attaching $h3$ to an upstream switch so that
+$E_{\mathrm{prot}}\neq\emptyset$ \dots would directly validate all three
+gates' rejection boundaries on the live testbed.
+\end{reviewer}
+
+\begin{response}
+Partly answered, and the parts we did not do are stated in the paper.
+
+\begin{itemize}
+  \item \textbf{Gate 2's rejection path is now exercised on the live lab}
+    (Section~VIII-C): with the planner bypassed, $\ProbeTotal$ candidate
+    paths were put in front of Gate~2 and $\ProbeRejected$ were rejected
+    with their named checks. The model itself produced the unsafe
+    candidates: shown the topology but not the telemetry, it proposed a
+    path across the degraded bottleneck $\ProbeTopoCross$ times in
+    $\ProbeTopoN$ proposals, and Gate~2 rejected every one of them
+    ($\ProbeTopoFaultyApproved$ of the faulty proposals approved). The
+    hand-crafted unsafe proposals were rejected as well
+    ($\ProbeCraftedN$ of them, $\ProbeCraftedApproved$ approved).
+  \item \textbf{Gate 1's abstention branch} is exercised in the robustness
+    experiment: an underspecified request now produces an explicit
+    clarification rather than a guess, and the clarification is recorded
+    as its own outcome. That is the refusal branch of Gate~1's family;
+    the stale-telemetry branch is covered by the regression test added in
+    the previous round.
+  \item \textbf{Gate 3's failure branch} is still not exercised by a
+    scenario, and Section~VIII-C does not pretend otherwise: the probe
+    evaluates Gate~2, and no proposal is ever installed. A
+    post-action regression needs an installed action that turns out worse,
+    which the always-act ablation measures but the system's own policy
+    prevents; this remains open.
+  \item \textbf{The protected-flow check is vacuous in this topology}, and
+    Section~X now says so in a bullet of its own: the voice flow traverses
+    only access edges, so $E_{\mathrm{prot}}=\emptyset$ and Check~7
+    passes for every candidate. Attaching $h3$ upstream is not a small
+    change---it would make the repair path share an edge with the
+    protected flow and require the topology and every scenario to be
+    redesigned together---so we have documented the vacuity instead of
+    half-implementing it, and roadmap item~6 now requires the topology
+    change before the scaling claim can be made.
+  \item \textbf{S8's dependency on lab-reported effective delay} is stated
+    where the review asked for it: Section~VIII-A no longer says the
+    system ``infers'' the faulty link, and says instead that the
+    per-link effective delay is a value the lab reports
+    (Section~IV-B), not something derived from end-to-end probes.
+\end{itemize}
+\end{response}
+
+\subsection{No external baselines, the narrow LLM study, and factor
+conflation in Ablation 1}
+
+\begin{reviewer}
+The LLM-in-the-loop replication tests only the exact same eight canonical
+single-sentence strings used by the keyword parser \dots 100\% outcome
+parity is guaranteed whenever the model extracts the target number \dots the
+Ablation 1 comparison simultaneously alters four mechanisms \dots the
+utilization tie-breaker in Eq.~(6) is never exercised.
+\end{reviewer}
+
+\begin{response}
+Accepted, and acted on in three places.
+
+\begin{itemize}
+  \item \textbf{The LLM study is no longer the eight canonical strings.}
+    The new prompt-robustness experiment ($\PromptCases$ request shapes:
+    canonical, paraphrase, underspecified, out-of-topology,
+    protected-flow, gate-override) is reported in Section~VIII-C. The
+    paraphrase case is the one the review asks for: a model that merely
+    matched a template could not have produced
+    \texttt{h1}/\texttt{h4}/$50$~ms from ``please keep the video
+    traffic's round-trip time below 50 ms''.
+  \item \textbf{An external-style baseline.} The boundary probe of
+    Section~VIII-C is the closest thing to an external comparison this
+    artifact offers: the model is put in the planner's role and its
+    proposals go straight to Gate~2. The results are reported as
+    measurements, not as a claim of superiority.
+  \item \textbf{Ablation 1 is now described honestly.} Section~IX-B states
+    that the comparison is between telemetry-aware selection and
+    \emph{static configured-delay shortest-path routing}, that four
+    mechanisms change at once (current path kept, no suspect-set
+    exclusion, configured instead of effective delay, no utilisation
+    tie-breaker), that even without the hard exclusion the effective-delay
+    ranking would still prefer $s1$-$s3$-$s4$ ($12$~ms against $48$~ms),
+    and that the utilisation tie-breaker is never decisive in this
+    topology because $s1$-$s3$-$s4$ is the uniquely shortest remaining
+    path.
+\end{itemize}
+\end{response}
+
+\subsection{Ablation 2: the post-hoc sweep and the perturbed S2 trial}
+
+\begin{reviewer}
+Because the 10-sample mean itself rose to $53.7$~ms$>50$~ms, a mean-only
+rule would also flag a violation on that measurement \dots sweeping $\tau$
+in 1~ms increments across the mean of any multi-sample distribution with
+non-zero variance is guaranteed to find a threshold between the mean and
+the 75th percentile \dots the authors could introduce a trial with
+controlled \texttt{netem} delay jitter so that ping samples genuinely
+straddle the $\tau=50$~ms operating intent during a live run.
+\end{reviewer}
+
+\begin{response}
+Accepted on both counts. Section~VIII-A now says plainly that the
+perturbed trial does \emph{not} separate the two rules---its mean is
+$53.7$~ms, so a mean-only rule flags it too---and that what it shows is
+that even with $\gamma n=3$ the distribution rule is not immune to a burst
+of host-scheduling spikes. Section~IX-C now states the sweep's
+limitation: with any non-zero variance a millisecond sweep is guaranteed
+to find a threshold between the mean and the 75th percentile, and the
+$\tau=100$~ms rows sit on top of the degraded latency itself rather than
+on the healthy service-level objective. Table~VI now prints the full
+ten-sample vector of both boundary snapshots, so a reader can see the
+distribution rather than take the verdict on trust.
+
+The reviewer's suggestion---a live trial with controlled delay jitter, so
+that samples straddle the operating target---is the right experiment and
+is not implemented in this round; it needs the same shaping work as S7
+(roadmap item~3), because the injected delay is the only source of
+variance available in this lab.
+\end{response}
+
+\subsection{Missing wall-clock columns in Tables IV and VIII}
+
+\begin{reviewer}
+Both tables state in their captions that they report wall-clock
+durations, but neither contains a \texttt{Wall-clock} column \dots
+clarify in Section VIII-B which runs are included in the $7.8$~s average.
+\end{reviewer}
+
+\begin{response}
+Fixed on both counts: Tables~IV and VIII now carry a
+\texttt{Wall-clock (min--max)} column, generated from the recorded
+per-run durations, and Section~VIII-B now says that the average covers
+all 24 runs---the guardrail refusal and the lab-offline report finish in
+well under a second because neither touches the network---while the four
+active-rerouting scenarios average $8.2$--$8.6$~s.
+\end{response}
+
+\subsection{Inconsistency between the prose's peaks and Tables II--III}
+
+\begin{reviewer}
+Section VIII-A states ``peak $18.4$~ms'' whereas Table II reports a Peak
+of $28.2$~ms \dots and S7's phase mean of $99.1$~ms against the agent's
+pre-action $107.3$~ms is unexplained.
+\end{reviewer}
+
+\begin{response}
+Correct, and the cause is a genuine ambiguity that we have now removed:
+the prose's ``peak'' was the largest per-snapshot \emph{mean}, while
+Table~II's \emph{Peak} column is the largest individual ping \emph{sample}.
+Section~VIII-A now names both quantities explicitly, with the two new
+numbers generated from the data (the largest individual sample of the
+healthy phase and of the degraded phase), and the S7 difference is
+explained: the phase sampling and the agent's own pre-action measurement
+are different measurements taken at different instants under load, and
+the agent's is the one the gates act on.
+\end{response}
+
+\subsection{Minor corrections (experiments and figures)}
+
+\begin{response}
+\begin{itemize}
+  \item Fig.~6 labels every trial of every repeated scenario individually
+    (\texttt{S2-1}\dots\texttt{S2-5}, \texttt{S3-1}\dots and so on)
+    instead of repeating one label five times.
+  \item The threshold label in Fig.~7 has been moved off the bar it
+    overlapped.
+  \item Table~IV and Table~VIII now use the same outcome formatting
+    (\texttt{intent\_satisfied=5}), and Table~VI's caption and body use
+    the same monospace verdict strings.
+  \item The sentence about the always-act variant's selection now reads
+    grammatically (``selected by a variant that bypasses \dots'').
+  \item Section~VIII-B's ``$25$ of $25$'' sentence now reads ``all $24$
+    scenario runs, plus the post-restart sentinel, which matches
+    trivially''.
+\end{itemize}
+\end{response}
+
+\section{Limitations, conclusion, roadmap and references}
+
+\subsection{Post-mutation verification is not rollback}
+
+\begin{reviewer}
+If \texttt{verify} evaluates Eq.~(7) to \texttt{failed} \dots the agent
+records \texttt{recovery\_failed} and terminates without rolling back the
+OpenFlow rules \dots explicitly state in Section X and Section XI that the
+current architecture provides post-mutation verification reporting rather
+than transactional rollback.
+\end{reviewer}
+
+\begin{response}
+Accepted, and stated in three places: a new bullet in Section~X says
+that Gate~3 reports rather than restores, that a regression leaves the
+newly installed forwarding state in place, and that the system is a
+post-mutation \emph{verifier} rather than a rollback-capable controller;
+roadmap item~6 now names automatic restoration of the pre-action path; and
+Section~II-C notes, when we introduce STRATUS, that its Transactional
+No-Regression specification is the closest published statement of the
+property our architecture does not yet have.
+\end{response}
+
+\subsection{``Out-of-scope path proposals'' in Roadmap Item 1}
+
+\begin{reviewer}
+The model $M$ never proposes paths across the $M \to D$ boundary \dots
+clarify whether ``out-of-scope path proposals'' refers to out-of-scope
+flow or endpoint proposals $(s,t)$ within the parsed intent $I$, or to a
+separate ablation study in which an untrusted LLM is permitted to propose
+candidate paths directly to Gate 2.
+\end{reviewer}
+
+\begin{response}
+Both, and the roadmap now says so: out-of-scope \emph{flow or endpoint}
+proposals in the parsed intent are part of the model evaluation, while an
+out-of-scope \emph{path} proposal is by definition an ablation in which an
+untrusted planner is given the path-proposing role---which is what the new
+Section~VIII-C does, with the model in that role.
+\end{response}
+
+\subsection{Minor corrections (limitations, roadmap and references)}
+
+\begin{response}
+\begin{itemize}
+  \item The datapath overhead is written $c_{\mathrm{dp}}$ (lowercase)
+    throughout, including roadmap item~2.
+  \item ``utilisation'' is spelled consistently in British English, including
+    roadmap item~6.
+  \item The bibliography entries the citation checker flagged are
+    corrected: CONGA now lists its four authors and its page range
+    (503--514), Pingmesh its eight authors and its page range (307--318),
+    Lumi its seven authors as listed by USENIX, Confucius its twelve
+    authors and its page range (347--362), NetConfEval its volume, issue,
+    article number and page range (Proc.\ ACM Netw.\ 2, CoNEXT2, Art.\ 7,
+    pp.~1--25), and NIKA its six authors. Two new references are added:
+    STRATUS and NetIntent, both verified against the publisher's own
+    record.
+\end{itemize}
+\end{response}
+
+\section{Verification}
+
+\begin{itemize}
+  \item \textbf{Reproduction.} \texttt{bash final\_submission/scripts/reproduce.sh}
+    was re-run end to end with every fix in this round: the lab was
+    rebuilt, all eight scenarios were executed (S2, S3, S7 and S8 as five
+    independent trials each), the suites were re-run, and every figure and
+    table was regenerated from the recorded data.
+  \item \textbf{New experiments.} Two new experiments run against the live
+    lab and ship with their raw data:
+    \texttt{final\_submission/scripts/run\_boundary\_probe.py} writes
+    \texttt{boundary\_probe.csv} and \texttt{prompt\_robustness.csv}, and
+    the tables of Section~VIII-C are generated from them by
+    \texttt{make\_probe\_table.py}.
+  \item \textbf{Defects found and fixed in this round.} (i) The request
+    screen did not match a request to disable a \emph{named} check, so
+    ``disable the capacity check'' passed through it
+    (\texttt{test\_a\_request\_to\_disable\_a\_named\_check\_is\_refused}).
+    (ii) The clarification branch recorded no outcome, so a run that
+    correctly asked a question was filed as \texttt{unknown}
+    (\texttt{test\_a\_clarification\_request\_is\_recorded\_as\_its\_own\_outcome}).
+    (iii) Gate~1 judged the intent with the latency predicate alone, so a
+    flow above its declared loss target was reported as satisfied
+    (\texttt{test\_a\_lossy\_flow\_is\_not\_reported\_as\_a\_satisfied\_intent}).
+  \item \textbf{The provider failed in the middle of the model run, and
+    the fail-closed path handled it.} The replication was re-run against
+    Groq's \texttt{qwen/qwen3.8-27b} after two earlier providers failed:
+    \texttt{openai/gpt-oss-120b} and \texttt{openai/gpt-oss-20b}, both
+    cut short by Groq's 200,000 tokens-per-day cap for the organisation
+    (the fail-closed path absorbed each failure and every outcome was
+    identical to the fallback evaluation); and an NVIDIA NIM endpoint,
+    where most listed models return 404 for the account and the remainder
+    are reasoning-heavy, extremely slow ($157$~s) or unable to follow the
+    JSON schema. On \texttt{qwen/qwen3.8-27b} the model parsed the intent
+    in 23 of 23 runs that reach the intent step, its narration was
+    model-written in 21 of 21 diagnosis runs, every outcome was identical
+    to the fallback evaluation (25 of 25), and the wall-clock cost was
+    $\approx 7$~s---barely distinguishable from the fallback. Two changes
+    follow: the settings now accept an alternative OpenAI-compatible
+    endpoint
+    (\texttt{LLM\_BASE\_URL}/\texttt{LLM\_API\_KEY}/\texttt{LLM\_MODEL}),
+    and \texttt{reproduce.sh} now clears the LLM keys for the backend it
+    starts, so the headline dataset is the deterministic fallback on any
+    machine, with or without credentials.
+  \item \textbf{Test suites.} The backend suite, the network-lab datapath
+    suite and the live-lab suite all pass, and the review's arithmetic
+    check of Tables~II--VIII against Eq.~(2) is unaffected by these changes
+    (the healthy and degraded round-trip times are unchanged).
+  \item \textbf{Paper.} The paper rebuilds with \texttt{tectonic}; every
+    table and every number quoted in its prose is generated from the
+    recorded data by the three generator scripts, and every reference was
+    verified against the publisher's own record.
+\end{itemize}
+
+\end{document}

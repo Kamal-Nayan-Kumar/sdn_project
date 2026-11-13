@@ -1,0 +1,1011 @@
+% ---------------------------------------------------------------------------
+% Trustworthy Agentic Automation for Intent-Based Self-Healing in SDN
+% IEEE conference format. Built with tectonic.
+%
+% Every tabular number comes from final_submission/paper/tables.tex, which is
+% generated from final_submission/data/ by
+%   final_submission/scripts/make_paper_tables.py
+% and every number quoted in the prose is a macro defined in the same file.
+% ---------------------------------------------------------------------------
+\documentclass[conference]{IEEEtran}
+
+% Tectonic compiles with XeTeX, so the font is selected with fontspec.
+% TeX Gyre Termes is the Times-like OpenType face the IEEE template expects.
+\usepackage{fontspec}
+% TeX Gyre Termes is the Times-like face the IEEE template expects and is
+% present on Overleaf; Nimbus Roman is its URW equivalent and is what the
+% Tectonic bundle carries.
+\IfFontExistsTF{TeX Gyre Termes}{\setmainfont{TeX Gyre Termes}}{\setmainfont{Nimbus Roman}}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage[font=footnotesize,labelfont=bf]{xcolor}
+\usepackage[hidelinks,breaklinks=true]{hyperref}
+
+% IEEEtran already defines \usepackage{algorithm} support; keep the counters
+% predictable.
+\newcommand{\ie}{\emph{i.e.}}
+\newcommand{\eg}{\emph{e.g.}}
+\newcommand{\Repo}{\texttt{final\_submission/}}
+
+\input{numbers.tex}
+\input{numbers_llm.tex}
+\input{numbers_probe.tex}
+
+\begin{document}
+
+\title{Trustworthy Agentic Automation for Intent-Based Self-Healing}
+\author{\begin{tabular}{@{}c@{\hspace{3.2em}}c@{\hspace{3.2em}}c@{\hspace{3.2em}}c@{}}
+Kamal Nayan Kumar & Altaf Raja & Ankit Kumar Keshari & Soumya Nimje \\[1pt]
+{\small 23BDS026} & {\small 23BCS011} & {\small 23BCS015} & {\small 23BEC054} \\[5pt]
+\multicolumn{4}{@{}c@{}}{Instructor: Dr. Jagadeesha R B}
+\end{tabular}}
+\maketitle
+
+\begin{abstract}
+Software-Defined Networking gives an operator precise programmatic control
+over traffic paths, but it does not say \emph{when} to use that control, nor
+whether a change helped. We present a locally-running system in which an
+administrator states a performance goal in ordinary language and an agent
+either restores the network, explains why it declined to act, or reports
+that it could not measure honestly---every outcome grounded in a live
+OpenFlow measurement, not an assertion.
+
+The decision to change the network is never made by a probabilistic model:
+a deterministic graph planner proposes, and three deterministic gates stand
+between the candidate action and the data plane---an \emph{evidence} gate
+that refuses missing, stale or insane measurements, a \emph{safety} gate
+validating every mutation against nine constraints, and a \emph{verification}
+gate re-measuring the network afterwards. A successful command is never
+reported as a successful recovery. The system runs entirely on one machine
+(Mininet, four OpenFlow 1.3 switches, Ryu controller, pure-Python datapath).
+Across eight scenarios the agent produces the correct outcome for its
+condition: a confident no-op, a verified recovery
+(\BaselineMean{}~ms$\to$\CongestedMean{}~ms, repaired to \RecoveryAfter{}~ms),
+an honest \emph{partial improvement}, a refusal to reroute a healthy flow,
+a refusal of a request disabling a safety gate, an explicit report that the
+network could not be measured, a verified recovery on a $60$~Mbit/s-configured
+bottleneck crossed by real UDP load past $80\%$ utilisation, and the correct
+localisation of an unflagged degraded link. We report three ablations and a
+replication with the model in the loop (Section~VIII-B). The gates are
+identical in both configurations; we state plainly what cannot yet be shown:
+no adversarial models, a userspace Python switch, and lab restarts between
+trials.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Software-Defined Networking, intent-based networking, network automation,
+large language models, trustworthy AI, self-healing networks, verification.
+\end{IEEEkeywords}
+
+% ===========================================================================
+\section{Introduction}
+Software-Defined Networking (SDN) separates routing decisions (control
+plane) from packet forwarding (data plane); a central controller programs
+forwarding tables via OpenFlow, so paths change in milliseconds network-wide
+\cite{mckeown2008openflow, feamster2014road, kreutz2015sdn}. That power is
+incomplete without a second half: knowing \emph{when} rerouting is correct,
+and whether it helped. A well-meaning reroute can degrade traffic or break
+connectivity---and be reported as executed successfully.
+
+LLMs are suited to the fuzzy parts: reading ``optimise video latency below
+$50$~ms'' into a structured goal, and explaining a diagnosis. They cannot be
+trusted with decisions that affect a running network, because they may
+hallucinate a measurement, claim a path is safe without checking, or state
+that a change succeeded unverified \cite{amodei2016safety}. We build an agent
+that is useful \emph{and} bounded: \emph{the planner may propose; only
+verified evidence may decide}. The pipeline is detection, evidence gathering,
+decision (abstain if unjustified), path selection, safety validation,
+execution, and verification---and steps 3, 5, 7 are the contribution.
+
+Scope, before any claim: (i) candidate reroutes come from the deterministic
+planner (the model, when configured, contributes intent and prose, never a
+path); (ii) the headline evaluation has no model endpoint configured---the
+agent parses intent deterministically---so the headline numbers are
+reproducible without credentials. A replication with the model active
+(\texttt{qwen/qwen3.8-27b} on Groq) is reported in Section~VIII-B; the
+gates, planner and guardrail are identical in both configurations.
+
+Our contributions are: (i) a runnable artifact whose three gates are plain
+deterministic Python, reproducible and auditable; (ii) a live OpenFlow
+evaluation measuring outcomes, including honest failures and refusals;
+(iii) three ablations over the same recorded data; (iv) a truth audit
+correcting twenty factual claims and fixing twenty-seven code defects
+(\Repo AUDIT.md).
+
+\section{Related Work}
+
+\subsection{SDN and intent-based networking}
+
+OpenFlow \cite{mckeown2008openflow} made programmable forwarding practical;
+standard architecture surveys catalogue the design space and failure modes
+\cite{feamster2014road,kreutz2015sdn}. Intent-based networking (IBN)
+reframes configuration as outcome rather than command, reconciled against
+observed state \cite{leivadeas2023ibn,rfc9315}. IBN surveys leave open what
+a system may do when the objective is not met; the three gates are a
+concrete answer, and the refusal is as much a part of it as the repair.
+
+\subsection{Verification and safe control}
+
+VeriFlow \cite{khurshid2013veriflow} and NetPlumber \cite{kazemian2013netplumber}
+check \emph{static} configuration invariants pre-installation. Our safety
+gate is of that kind; our verification gate is not---it re-measures the
+network \emph{after} the change. Prior closed-loop systems divide
+accordingly: ONOS's Intent Monitor and Reroute \cite{sanvito2018onos}
+re-installs an intent on an alternate path when a constraint is violated
+(no post-mutation outcome verdict, no refusal taxonomy); Lumi compiles
+natural-language intents through Nile and requires operator confirmation
+before deployment \cite{jacobs2021lumi}; NetConfEval \cite{wang2024netconfeval}
+benchmarks LLM configuration synthesis; Confucius \cite{wang2025confucius}
+and Protogeros et al.\ \cite{protogeros2026repair} place a model in the loop
+with external checkers; STRATUS \cite{chen2025stratus} organises agents in a
+state machine with an explicit \emph{Transactional No-Regression} safety
+specification---the closest published statement of what our gates approximate,
+and the rollback discipline we lack (Section~X). Our contribution is an
+untrusted planner behind a deterministic runtime boundary that measures
+\emph{afterwards}, refuses, abstains, and records why.
+
+\subsection{LLMs for network operation}
+
+Verified Prompt Programming \cite{mondal2023verified} pairs an LLM with
+verifiers and localised feedback---the model is useful only because something
+else checks it. The same shape appears at larger scale in NetConfEval
+\cite{wang2024netconfeval}, \cite{wang2025confucius} and
+\cite{protogeros2026repair}, and in NetIntent
+\cite{hossain2025netintent}, which carries an LLM across the whole
+intent-to-configuration path. The novelty is not a model that proposes
+without checking, but a bounded pipeline where refusal is a first-class,
+audited outcome.
+
+\section{Problem Scenario}
+
+Video between two sites is promised under a $50$~ms budget. An unrelated
+background transfer crosses the video's path, the link congests, and
+latency rises. Every operator decision in that state is made under
+uncertainty with no automatic check that the guess was correct---a reroute
+that appears to succeed but pushes latency from $97$~ms to $140$~ms looks
+identical to one that repaired it, unless something measures afterwards.
+The mirror failure is not acting: a single sub-threshold reading hides a
+flow oscillating above and below the limit. The third failure is acting on
+a healthy network because something \emph{wants} action. This paper
+demonstrates against all three: a four-host, four-switch Mininet lab with
+Ryu and a pure-Python OpenFlow 1.3 datapath, driven by a FastAPI backend
+and a LangGraph agent (Fig.~\ref{fig:topology}). The congestion symptom on
+$s2$-$s4$ is emulated by injecting link delay (most scenarios) or by real
+background UDP (S7); $h2$ carries that traffic to $h4$.
+
+\section{System Model}
+
+\subsection{Network model}
+The network is a graph $G=(V,E)$, $V=H\cup S$ (hosts, switches); each edge
+has a one-way delay $d_e$, a capacity $c_e$, and a status. \emph{Switch
+edges} $E_S$ are the only telemetry-bearing ones; host access edges add a
+fixed $0.1$~ms. A \emph{flow} is $(s,t)\in H\times H$. A \emph{path} is
+$p=(v_0,\dots,v_k)$, $v_0=s$, $v_k=t$, with switch-edge set
+$E_p=\bigl\{\{v_i,v_{i+1}\}:0\le i<k\bigr\}\cap E_S$ and one-way
+switch delay
+\begin{equation}
+D(p)=\sum_{e\in E_p} d^{\mathrm{eff}}_e ,
+\label{eq:delay}
+\end{equation}
+where $d^{\mathrm{eff}}_e$ is the delay the link currently carries
+(Section~IV-B): the configured value normally, the larger in-force value
+while a scenario holds the link. The ICMP round trip is
+\begin{equation}
+\mathrm{RTT}(p)\;\approx\;2\,\bigl(D(p)+2\,\delta_{\mathrm{acc}}\bigr)
++c_{\mathrm{dp}},
+\label{eq:rtt}
+\end{equation}
+with $\delta_{\mathrm{acc}}=0.1$~ms. $c_{\mathrm{dp}}$ is \emph{not}
+assumed: the calibration run measured $17.3$~ms ($c_{\mathrm{dp}}\approx
+0.9$~ms), this submission's run $\BaselineMean$~ms ($\approx1.2$~ms)---the
+same order, and the reason every claim compares against measured values,
+never Eq.~\eqref{eq:rtt}. An earlier datapath never matched a rule and gave
+$c_{\mathrm{dp}}\approx 13.7$~ms (Section~X).
+
+The controlled intent is a tuple
+\begin{equation}
+I=(s,t,\tau,\ell,\mathcal{P}),
+\label{eq:intent}
+\end{equation}
+where $\tau>0$ is the latency target in ms, $\ell$ an optional loss target,
+and $\mathcal{P}$ the protected flows; an element $q=(s_q,t_q,\tau_q,
+\ell_q,p_q)$ gives its endpoints, budgets, and path. The evaluated intent
+declares one protected flow, the voice flow $q=(\texttt{h3},\texttt{h4},
+20\,\mathrm{ms},1\,\%,[\texttt{h3},\texttt{s4},\texttt{h4}])$.
+
+\subsection{Observation model}
+At any time the lab produces a \emph{snapshot}
+$\Sigma=(G,\mathcal{L},\mathcal{F},C_{\mathrm{deg}})$: the topology $G$;
+per-link telemetry $\mathcal{L}=\{\ell_e\}$ with
+$\ell_e=(u_e,c_e,d^{\mathrm{eff}}_e,\mathrm{status}_e)$; per-flow
+measurements $\mathcal{F}=\{f\}$ (endpoints, path, sample distribution
+$\mathbf{s}_f$, peak, loss); and the set $C_{\mathrm{deg}}$ of degraded or
+no-longer-up links. $C_{\mathrm{deg}}$ and the gate's suspect set
+$C_{\mathrm{susp}}$ (Section~VI-B) are kept apart: the former is a lab fact
+used by Eq.~\eqref{eq:score} and the capacity check; the latter is the
+gate's \emph{diagnosis}, used by the planner. S8 removes the flag; S2/S3/S7
+coincide. Every element is measured: latency by in-host ICMP, utilisation by
+the switch's port counters, status by the controller. $d^{\mathrm{eff}}_e$
+is a per-link value \emph{reported by the lab} (configured delay plus
+injected delay), not inferred from host probes; Section~X and roadmap
+item~4 state what that costs us.
+
+\subsection{Trust boundary}
+The agent is a state graph over typed state. $M$ (the LLM) produces text and
+structured hints; deterministic components $D$ (gates, planner, executor)
+contain no model call. The only edge from $M$ into $D$ is the typed intent,
+validated against the schema and topology; the only edge from $D$ into the
+data plane passes through the safety gate.
+
+\section{Mathematical Formulation}
+% ===========================================================================
+
+\subsection{Violation}
+
+Let $f$ be the measured flow for intent $I$, with the non-negative ping
+samples $\mathbf{s}_f=(s_1,\dots,s_n)$, its reported peak, and its loss
+$p_f$. We define the violation predicate with three outcomes---violated,
+not violated, and \emph{unknown}:
+
+\begin{equation}
+v(f,I)=
+\begin{cases}
+\text{unknown}, & \text{if } f \text{ is absent or unmeasured,}\\
+\text{true},     & \text{if } n \ge 2,\ \bigl|\{i:s_i>\tau\}\bigr| \ge \gamma n,\\
+\text{false},    & \text{if } n \ge 2,\ \bigl|\{i:s_i>\tau\}\bigr| < \gamma n,\\
+\text{true},     & \text{if } n < 2 \text{ and the peak } > \tau,\\
+\text{true},     & \text{if } n < 2,\ \text{no peak, latency } > \tau,\\
+\text{false},    & \text{otherwise},
+\end{cases}
+\label{eq:violation}
+\end{equation}
+with $\gamma=0.25$ the fraction of samples that may exceed the target,
+lines evaluated in order. Packet loss is deliberately \emph{absent}: an
+intent may declare an optional loss target $\ell$, but the violation
+predicate is a statement about the latency distribution only; loss is
+evaluated in the verification verdict (Section~V-D via $L$), so the two
+predicates have disjoint scopes and the third row of Eq.~\eqref{eq:verify}
+is reachable. The second and third lines are the operative ones: an SLO is
+a statement about the \emph{distribution} of delays, not their average;
+$\bar{s}$ alone makes the verdict a coin flip on a flow oscillating around
+the target (Section~IX-C). The last three lines handle $n<2$: one sample
+falls back to the reported peak, then to the reported latency (for $n=1$,
+that single sample); two samples already face the distribution rule. The
+three-way outcome is what lets the system distinguish a confident no-op
+from a refusal.
+
+Gate~1's verdict $e(\Sigma,I)$ is likewise a conjunction: topology present
+and both endpoints in it; the flow measured (latency and loss present);
+page $\le 5$~s; samples $0\le s_i\le 10{,}000$~ms, $0\le p_f\le 100\%$,
+no NaN; at least one named suspect link present in live telemetry and
+topology; and confidence $\ge 0.6$, where confidence $=
+0.6\cdot(\mathrm{present})+0.4\cdot(\mathrm{fresh})$ over evidence items.
+Failures yield \texttt{insufficient}, \texttt{stale} or
+\texttt{unavailable}; the floor and freshness are configuration, not code.
+
+\subsection{Candidate ranking}
+
+$\mathcal{P}_c$ is the candidate set for flow $(s,t)$. A candidate is
+\emph{congestion-free} when it avoids both the lab's degraded set and the
+gate's suspects:
+\begin{equation}
+A(p)=\bigl[E_p\cap (C_{\mathrm{deg}}\cup C_{\mathrm{susp}})=\varnothing\bigr].
+\label{eq:avoids}
+\end{equation}
+Only a strictly-better candidate is worth installing, so
+\begin{equation}
+\mathrm{improve}(p) \;\equiv\; D(p) < D(p_{\mathrm{cur}}),
+\label{eq:improve}
+\end{equation}
+(a pre-filter, not a safety check: evaluated first, tagged
+\texttt{not\_an\_improvement}. Without it a planner ranking only by
+Eq.~\eqref{eq:score} would install a slower path over a healthy one ---
+scenario S4).
+
+We score candidates so that lower is better:
+\begin{equation}
+\mathrm{score}(p)=
+\begin{cases}
++\infty, & \neg A(p),\\[2pt]
+\displaystyle\sum_{e\in E_p} d^{\mathrm{eff}}_e
+ + \frac{1}{100}\max_{e\in E_p} u_e, & A(p).
+\end{cases}
+\label{eq:score}
+\end{equation}
+The sum uses the \emph{effective} delay (so a degraded link is expensive
+even with zero byte counters), runs over \emph{all} of $E_p$, and the
+disqualifying set includes the gate's suspects---so an unnamed bottleneck
+cannot silently strip congestion-awareness. S8 removes the lab flag; the
+repair still succeeds (Section~VIII). Section~X states the remaining
+dependency.
+Eq.~\eqref{eq:avoids} is a filter, not just a score: the planner's
+enumeration already excludes $C_{\mathrm{deg}}\cup C_{\mathrm{susp}}$, so
+a candidate failing $A(p)$ never reaches Gate~2; Eq.~\eqref{eq:score}'s
+$+\infty$ is the score such a path would carry if it were scored.
+Consequently the nine checks only ever see suspect-free candidates (Check~6
+can never be the check that excludes a suspect edge---in any scenario),
+and the gate's independent value lies in what the planner cannot pre-empt
+(endpoints, path shape, hop budget, flow scope), measured in Section~VIII-C.
+
+Crossing a degraded link is \emph{disqualifying} rather than merely
+expensive: routing a flow around a bottleneck is the entire point, so a path
+that still crosses the bottleneck is not a repair. Among clean paths the
+accumulated delay decides and utilisation only breaks ties. Section~IX-B
+measures what this rule is worth against the obvious alternative of ranking
+on delay alone.
+
+\subsection{Safety validation}
+
+A proposed action $a=(\mathrm{op}, s, t, p)$ is admitted only if all nine
+checks pass ($\mathrm{op}(a)\in\{\texttt{reroute\_flow}\}$, the only op
+the system ever proposes). Checks:
+
+\begin{enumerate}
+\item \textbf{operation\_allowlisted}: $\mathrm{op}(a)\in
+      \{\texttt{reroute\_flow}\}$, the complete allow-list;
+\item \textbf{endpoints\_exist}: $s,t\in V$;
+\item \textbf{path\_well\_formed}: $p=(v_0,\dots,v_k)$ with $v_0=s$,
+      $v_k=t$, no repeated node, and every node of $p$ in $V$;
+\item \textbf{hop\_budget}: the number of switch hops $k-1\le h_{\max}$,
+      with $h_{\max}=6$;
+\item \textbf{all\_links\_operational}: every $e\in E_p$ exists in
+      $E(G)$ and is up, both in the recorded topology and in the live
+      telemetry;
+\item \textbf{capacity\_respected}: no $e\in E_p$ is degraded
+      ($e\notin C_{\mathrm{deg}}$) and none has $u_e$ at
+      or above the congestion threshold, which is $80\%$ of capacity;
+\item \textbf{protected\_flows\_unmodified}: $E_p\cap
+      E_{\mathrm{prot}}=\varnothing$;
+\item \textbf{flow\_scope}: the action's endpoints are the \emph{intent's}
+      endpoints, not merely the path's;
+\item \textbf{request\_not\_expired}: $\mathrm{age}(a)\le 300\,\mathrm{s}$.
+\end{enumerate}
+
+Check 6 treats a degraded link as a capacity violation even at zero
+utilisation---the injected fault is delay, invisible to counters. Check 7
+compares the inter-switch edges, not nodes (two flows sharing a destination
+share its access switch, so a node test would reject every repair). Check 8
+distinguishes action from intent: a well-formed reroute of the \emph{wrong
+flow} is refused.
+
+Check 6 tests only $e\notin C_{\mathrm{deg}}$ and $u_e<80\%$---it neither
+reads $C_{\mathrm{susp}}$ nor enforces an effective-delay bound. The
+predicate that would close it is simple and we state it even though the
+implementation does not enforce it: $e\in E_p\Rightarrow
+d^{\mathrm{eff}}_e\le\alpha d_e$ (proposed $\alpha=2$), equivalently
+$E_p\cap C_{\mathrm{susp}}=\varnothing$. In S8, $C_{\mathrm{deg}}=
+\varnothing$ and $u_e=0\%$, so Check~6 passes vacuously for every
+candidate, including $s1$-$s2$-$s4$ across the fault; S8 succeeds only
+because Eq.~\eqref{eq:avoids} removed that path upstream. Gate~2 is the
+planner's backstop, not an independent opinion on unflagged faults
+(Section~VIII-C quantifies the gap; roadmap item~4 closes it).
+
+The checks are pure functions of a snapshot and the action---no model call,
+deterministic verdicts, each named check recorded separately (an
+unattributable rejection is not auditable). Risk tiers are assigned from
+the checks: HIGH (protected-flow or allowlist failure), MEDIUM (capacity,
+path-well-formedness, flow-scope), otherwise LOW. A \emph{failed} check
+rejects; the hold path (\texttt{awaiting\_approval}) applies only to an
+\emph{approved} action whose tier is in the unattended-hold set (default
+MEDIUM/HIGH). In the evaluated configuration, approved actions always pass
+everything, so the hold path is never taken---stated rather than hidden.
+
+\subsection{Verification}
+
+Let $f^-,f^+$ be the flow measurements before and after the action,
+$b,a$ their reported (scalar) mean RTTs, $p_{f^+}$ the post-action loss,
+$L\equiv(\ell\text{ undeclared})\vee(p_{f^+}\le\ell)$ the loss target.
+$\mathcal{Q}$ is the (possibly empty) set of protected-flow evaluations;
+$Q$ is their conjunction, vacuously true when empty. A protected flow $q$
+is ok when its measured latency is within its constraint, its loss within
+its limit, and its path unchanged. $v(f^+,I)$ is Eq.~\eqref{eq:violation}
+on the post-action measurement ($\neg v$ reads the latency branches; $L$
+carries the loss constraint). The verdict applies the first matching rule:
+
+\begin{equation}
+\mathcal{V}=
+\begin{cases}
+\texttt{unverified}, & \text{if } f^+ \text{ absent or unmeasurable},\\[2pt]
+\texttt{success},    & \text{if } \neg v(f^+,I) \wedge L \wedge Q,\\[2pt]
+\texttt{partial},    & \text{if } \neg v(f^+,I) \wedge \neg L \wedge Q,\\[2pt]
+\texttt{failed},     & \text{if } \neg Q,\\[2pt]
+\texttt{partial},    & \text{if } b \text{ known and } a < b,\\[2pt]
+\texttt{failed},     & \text{otherwise}.
+\end{cases}
+\label{eq:verify}
+\end{equation}
+where the conditions in each row are conjunctions, so \texttt{failed} fires
+whenever a protected flow is outside its constraints, whatever happened to
+the latency.
+
+Three ordering decisions are deliberate. Row~3 (latency within target, loss
+not) is distinct from a degenerate row~5: the honest report is \emph{partial},
+not success. Row~5 (improvement) fires only after row~4 (protected flows), and
+on \emph{improvement} regardless of whether the target is met---reporting a
+partial as success is the most damaging lie such a system could tell. Row~1 is
+not a verdict at all, and the implementation keeps it apart from
+``it did not recover''.
+
+The 1-to-1 correspondence between Eq.~\eqref{eq:verify} and the terminal
+outcomes the implementation records is:
+\begin{center}
+\footnotesize
+\begin{tabular}{ll}
+\toprule
+Eq.~\eqref{eq:verify} & recorded outcome \\
+\midrule
+\texttt{unverified} & \texttt{unverified} \\
+\texttt{success}    & \texttt{intent\_satisfied} \\
+\texttt{partial}    & \texttt{partial\_improvement} \\
+\texttt{failed}     & \texttt{recovery\_failed} \\
+\bottomrule
+\end{tabular}
+\end{center}
+No evaluated run produced \texttt{unverified}; it exists in the taxonomy and
+is recorded distinctly rather than folded into \texttt{recovery\_failed}.
+
+\emph{The gate judges post-action latency by the same
+sample-distribution predicate Eq.~\eqref{eq:violation} uses, not a scalar
+mean.}
+
+% ===========================================================================
+\section{Proposed Algorithm}
+% ===========================================================================
+
+\subsection{Overview}
+
+An explicit LangGraph state graph (Fig.~\ref{fig:workflow}) with thirteen
+compiled nodes and conditional routing: \texttt{intent}, \texttt{observe},
+\texttt{evidence}, \texttt{diagnose}, \texttt{validate}, \texttt{execute},
+\texttt{observe\_after}, \texttt{verify}, plus terminals \texttt{abstain},
+\texttt{satisfied}, \texttt{stop}, \texttt{hold}, \texttt{finish}. Network
+mutation is fixed in code; the model is consulted only where errors are
+recoverable. The routing is the implementation's routing function, not a
+paraphrase (Algorithm~\ref{alg:agent}, p.~\pageref{alg:agent}). The red
+boxes in Fig.~\ref{fig:workflow} are the five compiled terminals, drawn by
+\emph{outcome} rather than node: \texttt{stop} carries
+\texttt{guardrail\_blocked}, \texttt{clarification}, \texttt{rejected},
+\texttt{no\_better\_path}; \texttt{finish} is post-verify only; early
+exits skip it. The evidence gate routes to \textbf{satisfied} iff the
+violation verdict is false, the loss predicate holds, and evidence is
+sufficient/fresh/sane; to \textbf{diagnose} iff evidence is sufficient and
+the intent is violated; else \textbf{abstain}. The safety gate routes to
+\textbf{execute} iff approved and not approval-gated, to \textbf{hold} iff
+approved but approval-gated, to \textbf{stop} otherwise.
+
+A failed \texttt{observe} sends the run to the \texttt{abstain} terminal
+but preserves the \texttt{lab\_offline} outcome---``the network is fine''
+and ``the network could not be read'' are not the same report.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig_workflow.pdf}
+  \caption{The state graph. Amber nodes are the deterministic gates.
+  The thirteen compiled nodes are drawn with three \emph{outcome}-labelled
+  terminal boxes: \texttt{stop} carries \texttt{guardrail\_blocked},
+  \texttt{clarification} and \texttt{rejected}; \texttt{abstain} is the
+  evidence-short terminal; \texttt{satisfied} is \texttt{intent\_satisfied};
+  \texttt{hold} is \texttt{awaiting\_approval}; \texttt{finish} is reached
+  only after verification. Early exits bypass it.}
+  \label{fig:workflow}
+\end{figure}
+
+\begin{algorithm}[t]
+\small
+\caption{The guarded recovery workflow. The node names are those of the
+compiled graph, and the routing is the routing function of the
+implementation, not a paraphrase of it. Every branch terminates in exactly
+one terminal node; the API persists the run record from the terminal state.}
+\label{alg:agent}
+\begin{algorithmic}[1]
+\Require snapshot function $\Sigma(\cdot)$, validator $V$, executor $X$
+\Ensure a terminal outcome $o$: \texttt{intent\_satisfied},
+  \texttt{partial\_improvement}, \texttt{recovery\_failed},
+  \texttt{unverified}, \texttt{no\_better\_path}, \texttt{action\_rejected},
+  \texttt{awaiting\_approval}, \texttt{abstained\_insufficient\_evidence},
+  \texttt{lab\_offline}, \texttt{guardrail\_blocked}, or a clarification
+\State \textbf{intent}: screen the request with the deterministic guardrail
+  and parse $I$ (model, else deterministic fallback)
+\If{the request tries to override the instructions, move protected traffic,
+    or disable a gate}
+  \State $o\gets\texttt{guardrail\_blocked}$ via \texttt{stop}; \Return
+  \Comment{no telemetry is read}
+\EndIf
+\If{$I$ is ambiguous}
+  \State ask the operator to clarify; $o\gets$ clarification via
+    \texttt{stop}; \Return
+\EndIf
+\State \textbf{observe}: $\Sigma_0\gets\Sigma(I)$
+\If{$\Sigma(I)$ fails (the lab is unreachable)}
+  \State $o\gets\texttt{lab\_offline}$ via \texttt{abstain}; \Return
+  \Comment{the reason survives: abstention does not overwrite it}
+\EndIf
+\State \textbf{evidence}: $v\gets v(f,I)$ (Eq.~\eqref{eq:violation}),
+  $L\gets$ the loss predicate of Section~V-D, $(e,\text{freshness})\gets$
+  the evidence verdict
+\If{$v=\text{false} \wedge L \wedge e=\texttt{sufficient}$}
+  \State $o\gets\texttt{intent\_satisfied}$ via \texttt{satisfied}; \Return
+  \Comment{confident no-op; freshness/sanity checked first}
+\ElsIf{$e=\texttt{sufficient}$}
+  \State go to \textbf{diagnose}
+\Else
+  \State $o\gets\texttt{abstained\_insufficient\_evidence}$ via
+    \texttt{abstain}; \Return \Comment{no plan, no change}
+\EndIf
+\State \textbf{diagnose}: $C_{\mathrm{susp}}\gets$ the suspect links named
+  by Gate~1 (congested links first, else all on-path links, slowest
+  effective delay first), $\mathcal{P}_c\gets$ candidate paths avoiding
+  $C_{\mathrm{deg}}\cup C_{\mathrm{susp}}$, ranked by Eq.~\eqref{eq:score};
+  drop any candidate equal to the path the flow is already on
+\State \textbf{validate}: \emph{pre-filter} $\mathcal{P}_c$ by the
+  improvement test---a candidate whose effective switch delay is not less
+  than the current path's is dropped here, before any safety check is
+  evaluated; every drop is recorded with
+  \texttt{failed\_checks = [not\_an\_improvement]}
+\If{$\mathcal{P}_c=\varnothing$ on entry (the topology offers no
+    alternative path)}
+  \State $o\gets\texttt{action\_rejected}$ via \texttt{stop}; \Return
+  \Comment{no usable alternative path exists}
+\EndIf
+\If{no candidate survives the pre-filter and every recorded rejection is a
+    non-improvement}
+  \State $o\gets\texttt{no\_better\_path}$ via \texttt{stop}; \Return
+  \Comment{declined: rerouting would make the flow worse}
+\EndIf
+\State take the first $p\in\mathcal{P}_c$ that $V$ admits (the nine checks
+  of Section~V-C); record every rejection
+\If{no $p$ is admitted}
+  \State $o\gets\texttt{action\_rejected}$ via \texttt{stop}; \Return
+\ElsIf{$V$ requires human approval}
+  \State $o\gets\texttt{awaiting\_approval}$ via \texttt{hold}; \Return
+  \Comment{nothing changed}
+\Else
+  \State \textbf{execute}: $X(p)$ \Comment{the only mutation}
+  \State \textbf{observe\_after}: $\Sigma_1\gets\Sigma(I)$ \Comment{fresh}
+  \State \textbf{verify}: $o\gets\mathcal{V}(I,f^-,f^+,Q)$
+    (Eq.~\eqref{eq:verify}) \Comment{Eq. (7) rows map to the outcomes of Section~V-D}
+\EndIf
+\State \texttt{finish} (post-verification only) stamps the finish time;
+  the API persists the run record from the terminal state; \Return $o$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Gate 1: evidence sufficiency}
+
+Gate~1 checks the measurements exist, are recent ($\le 5$~s), are sane, and
+support diagnosis. A stale snapshot satisfying $\tau$ is routed to
+abstention, never to a confident no-op. The suspect rule: with no congested
+link ($u_e\ge 80\%$), name the congested links (most-utilised first);
+otherwise name \emph{all} current-path links by effective delay, slowest
+first. In S2 the degraded path $s1$-$s2$-$s4$ has
+$d^{\mathrm{eff}}_{s2\text{-}s4}=4+40=44$~ms and $s1$-$s2$ $4$~ms (set
+$\{s2\text{-}s4,s1\text{-}s2\}$, slowest first; one-way delay
+$D(s1\text{-}s2\text{-}s4)=48$~ms). Including the healthy upstream link
+disqualifies otherwise-clean candidates sharing it ($s1$-$s2$-$s3$-$s4$)---
+the cost of a conservative diagnosis, stated, not hidden; S8 depends on the
+same mechanism and succeeds. Lab delays: $s1$-$s2$ $4$, $s2$-$s4$ $4$
+(100~Mbit/s, $60$ in S7), $s1$-$s3$ $5$, $s2$-$s3$ $4$, $s3$-$s4$ $7$~ms.
+
+\subsection{Gate 2: deterministic action safety}
+
+Gate~2 returns a verdict, a risk tier, and the named checks. It never
+consults the model. A degraded link fails capacity even at zero utilisation.
+Scenario S8 shows the limit plainly: Check~6 passes vacuously on unflagged
+delay faults ($e$ not in $C_{\mathrm{deg}}$, $u_e$ below threshold); the
+path across the fault is absent only because the planner excluded it
+upstream. Gate~2 is a backstop, not an independent opinion on unflagged
+faults.
+
+\subsection{Gate 3: recovery verification}
+
+The verification gate re-measures the flow and applies Eq.~\eqref{eq:verify}.
+It distinguishes success, partial, failed, unverified---and treats a missing
+measurement as unverified, not success. Protected flows are checked
+\emph{before} the improvement test: harming one is a failure, however much
+the intent flow improved.
+
+\subsection{Deterministic intent parsing and the guardrail}
+
+With no model configured, a keyword parser extracts the stated endpoints,
+target and traffic class only; unstated facts keep documented defaults. A
+deterministic guardrail screens the request first: no identity overrides, no
+instruction overrides, no gate disables, no protected-traffic moves---a
+refusal is published as loudly as an action.
+
+% ===========================================================================
+\section{Baselines and Experimental Setup}
+% ===========================================================================
+
+\subsection{The lab}
+
+The lab is live: four hosts, four OpenFlow 1.3 switches in Mininet,
+Ryu controller, unprivileged network namespace; the datapath is the project's
+pure-Python switch (Open vSwitch unavailable; the backend reports which one
+is in use, so nothing is silently substituted). The lab API lives on a unix
+domain socket; no TCP port is opened. $s2$-$s4$ is the bottleneck (default
+$100$~Mbit/s; S7 reconfigures it to $60$~Mbit/s so UDP load crosses the
+$80\%$ utilisation threshold on live byte counters). Configured delays:
+$s1$-$s2$ $4$, $s2$-$s4$ $4$, $s1$-$s3$ $5$, $s2$-$s3$ $4$, $s3$-$s4$
+$7$~ms; access edges $0.1$~ms each. The four simple paths: $8$~ms,
+$12$~ms, $15$~ms, $13$~ms. An earlier datapath revision never matched an
+installed rule (every frame forwarded via the controller, $c_{\mathrm{dp}}
+\approx 13.7$~ms); it is fixed and regression-tested ($c_{\mathrm{dp}}
+\approx 0.9$~ms measured).
+
+\subsection{The scenarios and the faults}
+
+The fault is synthetic, not organic: $40$~ms of \texttt{netem} delay on
+both $s2$-$s4$ interfaces, link marked degraded. Reversible, reproducible,
+precisely named---but not offered load. S7 keeps the injection only as the
+fault breaching the intent; its utilisation branch is exercised by real UDP
+bytes, not by the injection.
+
+\subsection{Protocol}
+
+Each phase starts from a freshly built lab (bit-identical network; resets
+are not trusted). Five independent snapshots per phase: the video flow
+$h1\!\to\!h4$ and the voice flow $h3\!\to\!h4$, ten ICMP samples each,
+plus per-link counters. The agent then runs to a terminal outcome, events
+recorded via SSE. The active-recovery scenarios (S2, S3, S7, S8) are
+repeated as \RecoveryTrials{} independent trials each from a freshly built
+lab and reported as distributions, because the verdict depends on a
+post-action measurement the measurement host perturbs.
+
+\begin{table}[t]
+\centering
+\scriptsize
+\caption{The eight scenarios. The request is the operator's text; the
+condition is the state of the lab when the run starts.}
+\label{tab:scenarios}
+\begin{tabular}{ll}
+\toprule
+Scenario & Request (condition) \\
+\midrule
+S1 & \emph{optimise latency below 50 ms} (healthy) \\
+S2 & \emph{optimise latency below 50 ms} (degraded) \\
+S3 & \emph{optimise latency below 22 ms} (degraded) \\
+S4 & \emph{optimise latency below 15 ms} (healthy) \\
+S5 & \emph{disable the safety validator} (healthy) \\
+S6 & \emph{optimise latency below 50 ms} (lab stopped) \\
+S7 & \emph{optimise latency below 50 ms} (offered load, $60$~Mbit/s bottleneck) \\
+S8 & \emph{optimise latency below 50 ms} (degraded, fault invisible) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Test suites}
+
+Suite: 136 backend tests (unit, integration, regression), five live-lab
+tests, four datapath tests. The 21 tests in
+\texttt{test\_regressions.py} are named after the defects they prevent;
+27 tests in \texttt{test\_paper\_equations.py} assert each equation
+against its function.
+
+% ===========================================================================
+\section{Results}
+% ===========================================================================
+
+\input{tables.tex}
+
+\subsection{Outcomes}
+
+Tab.~\ref{tab:phases} gives the sampled measurements behind every phase, and
+Tab.~\ref{tab:outcomes} gives the terminal outcome of every scenario. Each
+outcome is the correct answer for its condition.
+
+\textbf{S1.} \BaselineMean{}~ms (no-op, correct; peak
+\BaselinePeak{}~ms). The agent returned \texttt{intent\_satisfied},
+installed no rules, and said why.
+
+\textbf{S2.} Latency rose to \CongestedMean{}~ms. The evidence gate named
+$s2$-$s4$ (the scenario's link; slowest on path) and then $s1$-$s2$; Eq.~\eqref{eq:score} ranked the
+degraded link last; the planner installed $s1$-$s3$-$s4$; all nine checks
+passed; Gate~3 measured \RecoveryAfterMean{}~ms ($\texttt{intent\_satisfied}$).
+Repeated as \RecoveryTrials{} fresh-lab trials:
+\RecoveryAfterMin{}--\RecoveryAfterMax{}~ms, 5/5 verified recovery
+(Tab.~\ref{tab:aggregates}). (An earlier trial was perturbed to
+$53.7$~ms mean and reported \texttt{partial\_improvement}; a mean-only rule
+would have agreed on that measurement, but the distribution rule is what
+makes the gate stable as $\tau$ oscillates---which is why outcomes are
+reported as distributions.) Closed-loop wall-clock:
+\RecoveryClockMean{}~s (range \RecoveryClockMin{}--\RecoveryClockMax{}).
+
+\textbf{S3.} The repair cannot meet the $22$~ms target. The agent rerouted
+and improved \PartialBefore{}~ms $\to$
+\PartialAfterMean{}~ms; verdict \texttt{partial\_improvement} in all
+\PartialTrials{} trials. A success label here would have been the most
+damaging failure.
+
+\textbf{S4.} Intent unreachable; agent correctly concluded so and declined
+to act (\texttt{no\_better\_path}, without installing anything). Had it
+installed the $12$~ms alternative over the healthy $8$~ms path, the
+verification gate would have had to report the regression it caused.
+
+\textbf{S5.} A request to disable the safety validator was refused before
+any telemetry was read (\texttt{guardrail\_blocked}).
+
+\textbf{S6.} With the lab stopped: \texttt{lab\_offline}---the network
+is unknown, the intent cannot be assessed, nothing was attempted.
+
+\textbf{S7.} The bottleneck is reconfigured to a narrow $60$~Mbit/s
+link and a $70$~Mbit/s UDP stream drives measured utilisation past $80\%$
+($\approx 93\%$ of capacity, live byte counters, no degraded flag), with the
+$40$~ms injection remaining only as the fault. The agent named $s2$-$s4$
+from utilisation and effective delay, installed $s1$-$s3$-$s4$, and Gate~3
+measured \texttt{intent\_satisfied} in all \OfferedTrials{} trials
+(between \OfferedAfterMin{} and \OfferedAfterMax{}~ms).
+
+\textbf{S8.} With the fault unflagged (link reported \emph{up}), the
+agent still localised the bottleneck from per-link effective-delay telemetry
+($\approx 25$~ms, Gate~3 satisfied, \NoOracleTrials{}/\NoOracleTrials{}
+trials). It is not a delay-\emph{inference} result: the lab reports
+$d^{\mathrm{eff}}_e$; Check~6 passes vacuously; the candidate is absent
+only because Eq.~\eqref{eq:avoids} excluded it upstream.
+
+The protected voice flow $h3\!\to\!h4$ stayed in
+\VoiceMin{}--\VoiceMax{}~ms throughout; the recovery did not disturb it.
+
+\subsection{The model in the loop}
+\label{sec:llm}
+
+Identical protocol, model active: \LlmModel{} (Groq, temperature $0$ for
+intent extraction), all eight scenarios, \RecoveryTrials{} trials for the
+active-recovery ones. The model parsed the intent correctly in
+\LlmParseOk{} of the runs reaching the intent step (the two that do not
+are the S5 guardrail refusal and the post-restart sentinel), and it was
+the parser in \LlmParsedByModel{} of them; in \LlmParseFallback{} the
+provider's daily token quota was exhausted and the deterministic parser
+took over---and produced the same tuple. Diagnosis narration was
+model-written in \LlmNarrationRuns{} of \LlmDiagnoseRuns{} diagnose runs.
+Outcomes are identical in every run (\LlmOutcomesMatch{} of \LlmRuns{}),
+and so are the installed paths and the nine-check Gate 2 verdicts. The
+provider-side failure changed what the operator read and nothing the
+system decided---which is the point of the fail-closed design. Wall-clock
+with the model $\approx$\LlmClockMean{}~s (max \LlmClockMax{}~s)
+vs.\ fallback $\approx 6$~s. Tab.~\ref{tab:llm}, Fig.~\ref{fig:llm}. We
+did \emph{not} evaluate the boundary against adversarial or ambiguous
+phrasing; a model emitting a \emph{plausible-but-wrong} tuple is invisible
+to every check here by construction (Section~XI).
+
+\input{tables_llm.tex}
+
+\subsection{Probing the boundary}
+\label{sec:probe}
+
+With the planner bypassed, the model proposes a path and every proposal
+goes straight to Gate~2. Shown the telemetry it proposed the
+congestion-free path in \ProbeTelApproved{} of \ProbeTelN{} attempts and
+none crossed the fault. Shown the topology \emph{without} the telemetry
+(an untrusted planner that cannot see which link is degraded), it
+proposed a path across the bottleneck in \ProbeTopoCross{} of
+\ProbeTopoN{} attempts; Gate~2 rejected every one
+(\ProbeTopoFaultyApproved{} of the faulty proposals approved, via
+\texttt{all\_links\_operational}, not Check~6---the lab's static
+topology still marks the held link down). The \ProbeCraftedN{}
+hand-crafted unsafe proposals (across the fault, unknown destination,
+non-existent link, wrong flow) were all rejected with named checks. The
+excess-delay predicate of Section~V-C would reject exactly the
+\ProbeStrong{} proposals that cross the fault: zero false positives.
+
+\textbf{Prompt robustness.} Tab.~\ref{tab:prompts} records six
+non-canonical requests: paraphrase executed; ``make the network faster''
+produced an explicit clarification rather than an invented intent; an
+unknown host changed nothing; rerouting the protected voice flow was
+refused; a request to disable a named check was refused. Both refusal
+cases are findings of our own probe, and both have regression tests.
+
+\input{tables_probe.tex}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig_llm.pdf}
+  \caption{Deterministic fallback (blue) versus the model in the loop
+  (green), per trial, on the four active-rerouting scenarios. Left: the
+  verification gate's measured post-action latency---the outcome quality is
+  the same in both configurations. Right: end-to-end wall-clock of the
+  closed-loop run---the model costs about two seconds per run. Outcomes
+  are identical throughout (Tab.~\ref{tab:llm}).}
+  \label{fig:llm}
+\end{figure}
+
+% ===========================================================================
+\section{Graphs and Performance Analysis}
+% ===========================================================================
+
+\subsection{What the numbers look like}
+
+Fig.~\ref{fig:latency} plots every sampled video latency by phase.
+Healthy phases cluster just under $18$~ms, degraded phases just above
+$97$~ms---the fault is the only thing separating an abstention from an
+action. $S1'$ is the restarted-run baseline re-sample.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig_latency_phases.pdf}
+  \caption{Measured video latency in every phase, one point per snapshot,
+  with the phase mean as a bar and the $50$~ms intent as a dashed line.
+  Logarithmic scale. The healthy phases and the degraded phases are
+  separated by more than a factor of five. $S1'$ is the healthy baseline
+  re-sampled after the end-of-run restart, to show the baseline reproduces.
+  S6 (lab stopped) yields no samples and is omitted from the axis; the
+  scenario appears in Tab.~\ref{tab:outcomes} with its
+  \texttt{lab\_offline} outcome.}
+  \label{fig:latency}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig_sample_distribution.pdf}
+  \caption{Every individual ICMP sample, not just the mean. The mean alone
+  cannot distinguish a flow that is comfortably inside its target from one
+  that oscillates across it, which is exactly the distinction
+  Eq.~\eqref{eq:violation} is built to make. S6 is likewise omitted; see
+  Fig.~\ref{fig:latency}.}
+  \label{fig:samples}
+\end{figure}
+
+Fig.~\ref{fig:samples} shows why the rule reads the samples: within a phase
+they straddle any plausible target, and the mean can sit either side of it.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig_outcomes.pdf}
+  \caption{Outcome and measured effect of every scenario, trial by trial.
+  The five independent trials of each active-rerouting scenario (S2, S3,
+  S7, S8) are reported individually, not as one representative run.}
+  \label{fig:outcomes}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig_link_utilisation.pdf}
+  \caption{Measured link utilisation. The delay fault reports $0\%$
+  utilisation because the only traffic is the ICMP probe; S7 reconfigures
+  $s2$-$s4$ to a narrow $60$~Mbit/s capacity and drives real background
+  UDP across it, so utilisation readings exceed the $80\%$ congestion
+  threshold on the datapath's own byte counters.}
+  \label{fig:utilisation}
+\end{figure}
+
+\subsection{Ablation 1: congestion-aware ranking}
+
+Tab.~\ref{tab:ranking} compares telemetry-aware selection with static
+configured-delay shortest-path routing. The two rows differ in four
+mechanisms---current path kept, no suspect-set exclusion, configured delay
+instead of effective delay, no utilisation tie-breaker---and isolate the
+ranking rule, not Eq.~\eqref{eq:avoids} vs. Eq.~\eqref{eq:score} alone:
+even live effective-delay ranking would still prefer $s1$-$s3$-$s4$ ($5+7=12$)
+to $s1$-$s2$-$s4$ ($4+44=48$). The static rule takes the cheaper-on-paper
+path, precisely the one crossing the fault; the fix's gain is the
+difference between missing and meeting the intent. (Once $s1$-$s2$-$s4$ is
+excluded, $s1$-$s3$-$s4$ is uniquely shortest; the utilisation tie-breaker is
+never decisive here.)
+
+\subsection{Ablation 2: the violation rule}
+
+Tab.~\ref{tab:violation} reports the two recorded disagreements, one per
+direction (rows from a millisecond sweep of $\tau$ from $5$ to $200$~ms
+over the recorded samples; the closest ties, smallest
+$|\bar{s}-\tau|$). \texttt{no / yes}: one host-scheduling spike pulls the
+mean past the target while $<\gamma$ of samples exceed it---the mean-only
+rule flags, the distribution rule does not. \texttt{yes / no}: the flow
+oscillates across a target while its mean sits below it---the mean-only
+rule reports health. A verdict that flips with the statistic is not one.
+The $50$~ms intent of the other scenarios is the operating point; no
+disagreement exists there (no healthy sample within $10$~ms).
+
+\subsection{Ablation 3: acting when there is nothing to act on}
+
+Tab.~\ref{tab:alwaysact}: an always-act variant---the same code path the
+agent takes when a target is unreachable---would have rerouted the healthy
+flow onto $s1$-$s3$-$s4$, measurably degrading it from
+\AlwaysActBase{} to \AlwaysActLatency{}~ms (\AlwaysActPct\%). The cost
+of always acting is measured, not asserted. The system leaves healthy
+flows alone.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig_ranking_ablation.pdf}
+  \caption{The measured latency of the path each ranking rule selects under
+  the degraded bottleneck, against the $50$~ms intent.}
+  \label{fig:ranking}
+\end{figure}
+
+% ===========================================================================
+\section{Limitations}
+
+We state these plainly; a system that claims trustworthiness should be
+explicit about what it cannot show.
+
+\begin{itemize}
+  \item \textbf{The fault is emulated, not organic.} The degraded scenario
+    pins $40$~ms of \texttt{netem} delay on $s2$-$s4$. S7 reconfigures the
+    link to $60$~Mbit/s and drives real UDP past $80\%$ utilisation with no
+    degraded flag, but still makes no claim about traffic mixes, packet
+    loss, or hardware line rate ($\sim$56~Mbit/s ceiling).
+  \item \textbf{Check 6 is blind to unflagged faults.} In every scenario,
+    suspect-crossing candidates are filtered upstream, so Check 6 passes
+    vacuously; the backstop that fires is Check 5
+    (\texttt{all\_links\_operational}), as Section~VIII-C measures. A
+    link that is \emph{up but slow} would pass both. Roadmap item~4
+    closes this.
+  \item \textbf{The suspect set is conservative.} The path-delay fallback
+    names every link of the current path, so Eq.~\eqref{eq:avoids} demands
+    edge-disjointness; a cut-edge topology defeats it. The ring happens to
+    have a fully edge-disjoint alternative. Fix: excess-delay or top-$k$
+    (roadmap item~4).
+  \item \textbf{The protected-flow check is vacuous here.} The voice flow
+    uses only access edges, so $E_{\mathrm{prot}}=\varnothing$ and Check~7
+    passes always; the repair path never competes with the voice flow. Non-
+    vacuous protection needs an upstream-attached voice host---not
+    attempted; protection is exercised by unit tests, not a live conflict.
+  \item \textbf{Verification reports; it does not roll back.} Gate~3 runs
+    after mutation; a \texttt{failed} or \texttt{partial} outcome leaves
+    the installed rules in place. There is no transactional undo.
+  \item \textbf{The datapath is userspace Python}, not merchant silicon.
+  \item \textbf{Lab restarts between trials}, not reset semantics.
+    Bit-identical baseline per trial is preferred over a leaking reset.
+  \item \textbf{One flow, one topology, one intent.} No scale, many
+    flows, concurrent recovery, or real adversaries.
+  \item \textbf{The model was tested only on the happy-path message} and
+    one model family; adversarial/ambiguous phrasings and compromised
+    models remain untested ($M\to D$ boundary by design; Section~XI).
+  \item \textbf{The planner ranks by configured/effective delay, not by
+    measured RTT.} The improvement check refuses any candidate whose delay
+    is not strictly less than the current path's; a measured-RTT planner is
+    untested future work.
+\end{itemize}
+
+\section{Conclusion}
+
+The interesting outcomes are the refusals: the confident no-op, the partial
+improvement, the refusal to degrade a healthy flow, the refusal to disable
+a gate, the report that the network could not be measured. All were
+produced on a live OpenFlow lab, and all are recorded in an auditable
+trail. The design lesson, as an architectural principle rather than a
+measured fact about models: confining an untrusted component to proposing
+and interpreting, and making every gate deterministic, makes a network
+change auditable and failures legible---and makes honest failure the
+default on any path that was not verified. We measured the gating
+architecture in isolation, with a deterministic parser and a deterministic
+planner; we did not measure how the boundary behaves against a live, noisy
+or adversarial model. An accompanying truth audit corrected twenty factual
+claims and fixed twenty-seven code defects---several of which produced
+plausible numbers rather than obvious errors.
+\subsection*{A concrete roadmap for closing the gaps}
+
+\begin{enumerate}
+  \item \textbf{Exhaust the active-model evaluation} (\S~VIII-B): models
+    that misparse confidently, adversarial and ambiguous phrasings, and
+    out-of-scope flow/endpoint proposals in $I$ (an untrusted planner
+    \S~VIII-C is the same boundary). Ground it in NetConfEval
+    \cite{wang2024netconfeval} and NIKA \cite{wang2025nika}.
+  \item \textbf{Port to a real switch path}: Open vSwitch (userspace)
+    then hardware targets, dropping interpreter scheduling jitter and the
+    $\sim$56~Mbit/s ceiling.
+  \item \textbf{Organic queueing}: shape $s2$-$s4$ to a finite queue
+    (\texttt{tc-htb} at $10$--$20$~Mbit/s) so standing queues breach the SLA
+    without the injected delay; then push offered load past the ceiling.
+  \item \textbf{Close Gate 2's gap and refine the suspect set}:
+    $d^{\mathrm{eff}}_e \le \alpha d_e$ as a tenth named check
+    (Section~V-C, quantified in \S~VIII-C), and the excess-delay (or
+    top-$k$) suspect set---removing the cut-edge starvation risk and the
+    full-path disjointness that can block the planner.
+  \item \textbf{Compound the fix}; keep the lab restart as determinism,
+    not as a requirement (the reset now restores the baseline path).
+  \item \textbf{Scale}: larger topology; multi-flow cascading load; extend
+    the protection semantics; attach the protected host upstream so
+    Check~7 is non-vacuous (Section~X).
+\end{enumerate}
+
+% ===========================================================================
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

@@ -144,6 +144,8 @@ python3 -m venv .venv
 .venv/bin/pip install fastapi 'uvicorn[standard]' pydantic pydantic-settings \
     langgraph sqlalchemy 'psycopg[binary]' alembic httpx python-dotenv groq
 .venv/bin/pip install pytest pytest-asyncio ruff
+# matplotlib is needed only to regenerate the paper's figures:
+.venv/bin/pip install matplotlib
 (cd apps/web && npm install)
 
 # 4. Configuration

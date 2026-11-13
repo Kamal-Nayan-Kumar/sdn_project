@@ -132,6 +132,8 @@ class AgentState(TypedDict, total=False):
         "unverified",
         "abstained_insufficient_evidence",
         "action_rejected",
+        "awaiting_approval",
+        "no_better_path",
         "cancelled",
         "lab_offline",
         "llm_unavailable",

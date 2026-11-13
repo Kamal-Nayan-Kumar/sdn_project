@@ -1,4 +1,4 @@
-"""Thin, fail-closed wrapper around the Groq chat API.
+"""Thin, fail-closed wrapper around an OpenAI-compatible chat API.
 
 The agent nodes call `chat_json()` when an LLM can help and fall back to
 deterministic logic when it cannot. Two properties matter for trustworthiness:
@@ -11,6 +11,13 @@ deterministic logic when it cannot. Two properties matter for trustworthiness:
     calling node records *why* the model was skipped in the audit trail instead
     of quietly substituting invented values.
 
+The client is provider-agnostic. It talks to any OpenAI-compatible
+``chat/completions`` endpoint: Groq's default (``https://api.groq.com/openai/v1``),
+NVIDIA NIM (``https://integrate.api.nvidia.com/v1``), OpenRouter, or a local
+gateway. The endpoint, key and model come from settings
+(``LLM_BASE_URL`` / ``LLM_API_KEY`` / ``LLM_MODEL``; or ``GROQ_*`` for Groq's
+historic defaults), so switching providers needs no code change.
+
 `schema_hint` is a lightweight example of the shape expected. It is included in
 the prompt as guidance, never used to coerce or repair the response.
 """
@@ -20,7 +27,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+import socket
 import threading
+import urllib.error
+import urllib.request
 from typing import Any, Callable
 
 from app.core.config import get_settings
@@ -33,52 +43,59 @@ LOG = logging.getLogger(__name__)
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
-_client_lock = threading.Lock()
-_client: Any = None
-
 
 class LLMUnavailable(RuntimeError):
     """The LLM could not be used. The caller must fall back deterministically."""
 
 
 class LLMTimeout(LLMUnavailable):
-    """The request exceeded `GROQ_TIMEOUT_SECONDS`."""
+    """The request exceeded the configured timeout."""
 
 
 class LLMOutputError(LLMUnavailable):
     """The model replied, but the reply was not usable JSON."""
 
 
-def _get_client() -> Any:
-    """Lazily build a shared `groq.Groq` client.
+def _endpoint() -> str:
+    settings = get_settings()
+    base = (settings.llm_endpoint or "https://api.groq.com/openai/v1").rstrip("/")
+    return f"{base}/chat/completions"
 
-    Construction happens on first use and is cached: importing this module must
-    not fail when no API key is present, because the agent has to run in a
-    fully deterministic mode in that case.
-    """
-    global _client
-    if _client is not None:
-        return _client
 
-    with _client_lock:
-        if _client is not None:
-            return _client
+def _headers(*, stream: bool = False) -> dict[str, str]:
+    settings = get_settings()
+    return {
+        "Authorization": f"Bearer {settings.llm_key}",
+        "Content-Type": "application/json",
+        # Some provider gateways drop urllib's default user agent.
+        "User-Agent": "curl/8.0.1",
+        "Accept": "text/event-stream" if stream else "application/json",
+    }
 
-        settings = get_settings()
-        if not settings.llm_configured:
-            raise LLMUnavailable("GROQ_API_KEY is not configured")
 
+def _post_json(endpoint: str, headers: dict[str, str], payload: dict[str, Any],
+               timeout: float) -> dict[str, Any]:
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(endpoint, data=data, method="POST",
+                                 headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        body = ""
         try:
-            from groq import Groq
-        except ImportError as exc:  # pragma: no cover - dependency missing
-            raise LLMUnavailable(f"groq client is not installed: {exc}") from exc
-
-        _client = Groq(
-            api_key=settings.groq_api_key,
-            timeout=settings.groq_timeout_seconds,
-            max_retries=0,  # retries are the caller's decision, not ours
-        )
-        return _client
+            body = exc.read().decode("utf-8", errors="replace")[:300]
+        except Exception:
+            body = str(exc)
+        raise LLMUnavailable(f"provider returned HTTP {exc.code}: {body}") from exc
+    except (socket.timeout, TimeoutError) as exc:
+        raise LLMTimeout(f"request exceeded {timeout}s") from exc
+    except urllib.error.URLError as exc:
+        raise LLMUnavailable(f"provider not reachable: {exc.reason}") from exc
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise LLMOutputError(f"provider returned non-JSON: {raw[:200]!r}") from exc
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -121,6 +138,7 @@ def chat_json(
     system: str,
     user: str,
     schema_hint: dict[str, Any] | None = None,
+    temperature: float = 0.0,
 ) -> dict[str, Any]:
     """Ask the model for a JSON object.
 
@@ -129,6 +147,10 @@ def chat_json(
         user:    the data or question, typically telemetry.
         schema_hint: illustrative object describing the expected keys and
             value types. Purely prompt material.
+        temperature: decoding temperature. The default (0) is what the
+            agent's own calls use, because reproducible decisions matter more
+            than variety; the boundary-probe experiment raises it to draw
+            several distinct proposals from the same prompt.
 
     Returns:
         The parsed JSON object.
@@ -136,37 +158,33 @@ def chat_json(
     Raises:
         LLMTimeout: the request took longer than the configured timeout.
         LLMOutputError: the reply could not be parsed as a JSON object.
-        LLMUnavailable: no key configured, client unusable, or the API
-            returned an error.
+        LLMUnavailable: no key configured, or the provider returned an error.
     """
     settings = get_settings()
-    client = _get_client()
+    if not settings.llm_configured:
+        raise LLMUnavailable("no LLM key is configured")
 
-    messages = [
-        {"role": "system", "content": system + _render_hint(schema_hint)},
-        {"role": "user", "content": user},
-    ]
-
-    try:
-        completion = client.chat.completions.create(
-            model=settings.groq_model,
-            messages=messages,
-            temperature=0.0,  # reproducible decisions matter more than variety
-            response_format={"type": "json_object"},
-            timeout=settings.groq_timeout_seconds,
-        )
-    except Exception as exc:
-        name = type(exc).__name__
-        if "Timeout" in name:
-            raise LLMTimeout(
-                f"{settings.groq_model} exceeded "
-                f"{settings.groq_timeout_seconds}s") from exc
-        raise LLMUnavailable(f"Groq request failed: {exc}") from exc
+    payload = {
+        "model": settings.llm_model_name,
+        "messages": [
+            {"role": "system", "content": system + _render_hint(schema_hint)},
+            {"role": "user", "content": user},
+        ],
+        "temperature": temperature,
+        "max_tokens": 2000,
+        "response_format": {"type": "json_object"},
+    }
 
     try:
-        content = completion.choices[0].message.content or ""
-    except (AttributeError, IndexError, KeyError) as exc:
-        raise LLMOutputError(f"unexpected response shape: {exc}") from exc
+        data = _post_json(_endpoint(), _headers(), payload,
+                          settings.groq_timeout_seconds)
+    except LLMUnavailable as exc:
+        raise LLMUnavailable(str(exc)) from exc
+
+    try:
+        content = data["choices"][0]["message"].get("content") or ""
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMOutputError(f"unexpected response shape: {data!r:.200}") from exc
 
     return _extract_json(content)
 
@@ -191,46 +209,74 @@ def chat_stream(
     callers keep one fallback path.
     """
     settings = get_settings()
-    client = _get_client()
+    if not settings.llm_configured:
+        raise LLMUnavailable("no LLM key is configured")
 
+    payload = {
+        "model": settings.llm_model_name,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": temperature,
+        "max_tokens": 2000,
+        "stream": True,
+    }
+
+    req = urllib.request.Request(_endpoint(),
+                                 data=json.dumps(payload).encode("utf-8"),
+                                 method="POST",
+                                 headers=_headers(stream=True))
     try:
-        completion = client.chat.completions.create(
-            model=settings.groq_model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            temperature=temperature,
-            stream=True,
-            timeout=settings.groq_timeout_seconds,
-        )
-    except Exception as exc:
-        name = type(exc).__name__
-        if "Timeout" in name:
-            raise LLMTimeout(
-                f"{settings.groq_model} exceeded "
-                f"{settings.groq_timeout_seconds}s") from exc
-        raise LLMUnavailable(f"Groq request failed: {exc}") from exc
+        resp = urllib.request.urlopen(req, timeout=settings.groq_timeout_seconds)
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")[:300]
+        except Exception:
+            body = str(exc)
+        raise LLMUnavailable(f"provider returned HTTP {exc.code}: {body}") from exc
+    except (socket.timeout, TimeoutError) as exc:
+        raise LLMTimeout(f"request exceeded {settings.groq_timeout_seconds}s") from exc
+    except urllib.error.URLError as exc:
+        raise LLMUnavailable(f"provider not reachable: {exc.reason}") from exc
 
     parts: list[str] = []
+    saw_any_byte = False
     try:
-        for chunk in completion:
-            if should_stop is not None and should_stop():
-                break
-            choices = getattr(chunk, "choices", None) or []
-            if not choices:
-                continue
-            delta = getattr(choices[0], "delta", None)
-            text = getattr(delta, "content", None) if delta is not None else None
-            if not text:
-                continue
-            parts.append(text)
-            on_delta(text)
+        with resp:
+            for raw in resp:
+                if should_stop is not None and should_stop():
+                    break
+                line = raw.decode(errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                payload_line = line[5:].strip()
+                if payload_line in ("[DONE]", ""):
+                    break
+                try:
+                    chunk = json.loads(payload_line)
+                except json.JSONDecodeError:
+                    continue
+                for choice in chunk.get("choices", []):
+                    delta = choice.get("delta") or {}
+                    # Providers differ on where reasoning vs content lives;
+                    # both are carried through to the operator stream.
+                    text = (delta.get("content") or "")
+                    if not text:
+                        text = delta.get("reasoning_content") or ""
+                    if not text:
+                        continue
+                    saw_any_byte = True
+                    parts.append(text)
+                    on_delta(text)
     except Exception as exc:  # a broken stream is still a usable prefix
         if not parts:
-            raise LLMUnavailable(f"Groq stream failed: {exc}") from exc
-        LOG.warning("Groq stream ended early: %s", exc)
+            raise LLMUnavailable(f"stream failed: {exc}") from exc
+        LOG.warning("LLM stream ended early: %s", exc)
 
+    if not saw_any_byte:
+        raise LLMUnavailable("provider returned an empty stream")
     return "".join(parts).strip()
 
 
@@ -241,6 +287,17 @@ def llm_available() -> bool:
 
 def reset_client_cache() -> None:
     """Test helper: force the next call to rebuild the client."""
-    global _client
-    with _client_lock:
-        _client = None
+    # The urllib-based client holds no persistent state; kept for API
+    # compatibility with the former SDK-based implementation.
+    globals().pop("_client", None)
+
+
+__all__ = [
+    "LLMUnavailable",
+    "LLMTimeout",
+    "LLMOutputError",
+    "chat_json",
+    "chat_stream",
+    "llm_available",
+    "reset_client_cache",
+]

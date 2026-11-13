@@ -1,0 +1,44 @@
+# Pinned dependencies for reproducing the paper's results.
+#
+# The backend and the network lab run from the repository's own virtualenv
+# (`.venv` at the repository root); the backend resolves `app.*` from
+# `services/api`, so no editable install is needed.
+#
+# The Ryu controller is not on PyPI here: the lab imports it from the
+# vendored checkout at `network-lab/controller/ryu-src`, which
+# `scripts/setup-ryu.sh` clones and patches. It therefore has no pin here.
+#
+# Install with:
+#     python3 -m venv .venv
+#     .venv/bin/pip install -r final_submission/requirements.txt
+#
+# Verified against Python 3.12.15 on Linux (Omarchy, x86_64).
+
+# --- backend ---------------------------------------------------------------
+fastapi==0.143.0
+uvicorn[standard]==0.54.0
+pydantic==2.14.1
+pydantic-settings==2.15.0
+langgraph==1.2.15
+langchain-core==1.6.10
+sqlalchemy==2.1.4
+alembic==1.20.0
+psycopg[binary]==3.3.6
+httpx==0.28.1
+python-dotenv==1.2.4
+groq==1.7.0
+
+# --- network lab -----------------------------------------------------------
+# Mininet ships no C sources on PyPI, so `network-lab/bin/mnexec` is built
+# from a checkout by `scripts/setup-mininet.sh`.
+mininet==2.3.0.dev6
+# Required by the vendored Ryu controller.
+eventlet==0.41.2
+
+# --- tests -----------------------------------------------------------------
+pytest==9.1.1
+
+# --- figures ---------------------------------------------------------------
+matplotlib==3.11.2
+numpy==2.5.4
+pandas==3.0.6

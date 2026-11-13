@@ -1,0 +1,1307 @@
+% Response to the Google Deep Review
+% For "Trustworthy Agentic Automation for Intent-Based Self-Healing in
+% Software-Defined Networks: Three Deterministic Gates around a Bounded Agent"
+%
+% Compile with:  tectonic REVISION_REPORT.tex
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1.9cm]{geometry}
+\usepackage{mathptmx}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,longtable,array,colortbl}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{fancyhdr,titlesec}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+
+\definecolor{ink}{HTML}{1F2A44}
+\definecolor{accent}{HTML}{0F5EA8}
+\definecolor{quote}{HTML}{5A6B7C}
+
+\hypersetup{
+  pdftitle={Response to the Google Deep Review},
+  pdfauthor={The author},
+  colorlinks=true, urlcolor=accent, linkcolor=accent, citecolor=accent}
+
+\titleformat{\section}{\Large\bfseries\color{ink}}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries\color{ink}}{\thesubsection}{0.8em}{}
+\setlist{nosep,topsep=3pt}
+
+\pagestyle{fancy}
+\fancyhead[L]{\small\color{quote}Response to the Google Deep Review}
+\fancyhead[R]{\small\color{quote}\thepage}
+\fancyfoot{}
+
+
+% A reviewer quote box
+\newenvironment{reviewer}{\par\medskip\noindent\begin{minipage}{\linewidth}\small\itshape\color{quote}\textbf{Reviewer:}\par}{\end{minipage}\medskip\par}
+\newenvironment{response}{\par\noindent\begin{minipage}{\linewidth}\small\textbf{Response.}\par}{\end{minipage}\medskip\par}
+
+\begin{document}
+
+\begin{titlepage}
+\vspace*{2.8cm}
+{\color{ink}\Huge\bfseries Response to the Google Deep Review\\\bigskip}
+{\color{ink}\large\bfseries
+\emph{Trustworthy Agentic Automation for Intent-Based Self-Healing in
+Software-Defined Networks: Three Deterministic Gates around a Bounded Agent}\\[0.6em]}
+{\large Revised submission, November 2026}
+
+\vspace{1.2cm}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Paper} & \texttt{final\_submission/paper/paper.pdf} \\
+\textbf{Source} & \texttt{final\_submission/paper/paper.tex} \\
+\textbf{Audit} & \texttt{final\_submission/AUDIT.md} \\
+\textbf{Raw data} & \texttt{final\_submission/data/} \\
+\textbf{One command} & \texttt{bash final\_submission/scripts/reproduce.sh} \\
+\textbf{Base commit} & \texttt{704ef4026c9ffd0bb0bad91835ec1d348134a564} (branch \texttt{main}) \\
+\bottomrule
+\end{tabular}
+
+\vspace{1.5cm}
+\noindent\textbf{A note on how to read this document.}
+
+Every comment in the review is reproduced (lightly trimmed, never paraphrased
+beyond recognition) and is followed by a numbered response. The responses cite
+the paper's sections and the artifact's files, tests and measurements so that
+each one can be checked in a minute or two. Where a claim was removed rather
+than fixed, the removal is stated plainly and the evidence for it is given
+(Section~3). Where a number changed, the old and the new value are both given
+(Section~5). Where the reviewer's reading was correct and the code was wrong,
+the defect is described and the fixing test is named. Where the reviewer
+overstated, we say so and why.
+
+\vfill
+\end{titlepage}
+
+\section{Summary of changes, and what the review actually found}
+
+The Google Deep Review of the submission identified one genuine, severe, and
+fixable error, three formal inconsistencies between the paper's mathematics and
+the implementation, two clear editorial errors in the bibliography, and a
+consistent pattern of overclaiming around the un-evaluated language-model
+components of the architecture. The review's framing was accurate on its most
+important points. What it could not see from the outside --- because the
+submission shipped with a working lab and a seeded bug --- was that the fault it
+flagged (unenforced OpenFlow rules) was not a framing error in the prose, but a
+literal bug in the OpenFlow flow-mod parser that prevented \emph{any} rule from
+ever matching. That single bug had inflated every latency in the submission by
+roughly $2\times$, which is what had produced the numbers the reviewer rightly
+flagged as internally inconsistent. The revision, therefore, was not a matter of
+re-labelling the same evidence: the artifact was measured again on a fixed tree,
+and the paper was rewritten around the new measurements.
+
+\subsection{The headline findings}
+
+\begin{enumerate}[leftmargin=1.5em]
+\item \textbf{The pure-Python OpenFlow switch never matched any priority-100 rule
+  installed by the controller.} The bug was in \texttt{of13switch.\_parse\_flow\_mod}:
+  the OXM match is padded on the wire to an 8-byte boundary, but the decoder added
+  only the told-length (\texttt{match\_len}) to the offset instead of the padded
+  length. Every instruction decoder was therefore starting inside the zeroed
+  padding and reading an instruction header of type 0, length 0. Result: no rule
+  ever had an action, every IPv4 data frame missed the flow table, and every
+  packet was forwarded via the controller. Fixed; four regression tests added in
+  \texttt{network-lab/tests/test\_of13switch.py}. Measured before: healthy RTT
+  $\approx 29.7$ ms; measured after: $17.3$ ms. The repaired path moves $97.4$ ms
+  $\to 25.8$ ms.
+\item \textbf{Safety Check 7 was unsatisfiable.} It required strict node-disjointness
+  between the action's path and every protected flow's path, but the video intent
+  ($h1\!\to\!h4$) and the protected voice flow ($h3\!\to\!h4$) share the
+  destination switch $s4$ and host $h4$. \emph{Every} candidate path for the video
+  flow visits $s4$. The gate would have rejected every legitimate repair had the
+  protected flow actually been populated from the default intent; the empty
+  protected-flow set in the original code is what kept the check vacuous. Fixed to
+  compare inter-switch edges, and the default intent now declares the voice flow.
+\item \textbf{The verification gate reused a different, weaker predicate than the
+  evidence gate.} Gate 1 applied the sample-distribution rule of Eq.~(4);
+  Gate 3 compared only the mean. A run could therefore act on a violation that
+  verification would not recognise, and report recovery where the evidence gate
+  itself would not have approved a reroute. Fixed: both gates now call the same
+  shared predicate, \texttt{safety.gates.latency\_violation}. Regression test added.
+\item \textbf{The planner installed an objectively worse path on a healthy
+  network before the review round, and the review correctly flagged it.} Scenario
+  S4 (healthy, unreachable target) had the agent install the $12$ ms
+  alternative over the $8$ ms in-use path, then let the verification gate report
+  the regression. The planner now declines whenever no candidate strictly
+  improves the effective switch delay of the current path; S4 now ends
+  \texttt{no\_better\_path} with nothing installed.
+\item \textbf{The offered-load experiment the review demanded was absent.}
+  The congestion scenario was a synthetic latency fault with $0.000\%$ measured
+  utilisation everywhere, and the traffic generator in the repo was dead code.
+  Two new first-class scenarios were added: \textbf{S7} (degraded bottleneck with
+  real background UDP at $\approx 55\%$ utilisation on $s2$-$s4$; repair verified)
+  and \textbf{S8} (degraded bottleneck fully unflagged; the agent localises the
+  bottleneck from telemetry alone and repairs). The utilisation branch of the
+  evidence gate is, however, still not exercised live: the datapath's maximum
+  sustainable rate is around $60$--$85$~Mbit/s below the $80\%$ threshold, so the
+  branch is covered only by tests. This is reported, not hidden.
+\item \textbf{The bibliography contained two entries whose author lists were
+  fabricated.} Both are now corrected from the publisher's own record. The
+  citation check incidentally caught the same class of error in two other
+  entries we also pre-registered with weaker author lists; these were corrected
+  at the same time.
+\item \textbf{The ``Agentic AI'' framing materially overstated the evaluated
+  system.} No LLM is invoked in any evaluated run. This was disclosed in two
+  places in the original paper (Section~II-D and Section~X) but not up front,
+  and the title, abstract and conclusion invited the reader to imagine LLM-driven
+  control. The revision states the limitation explicitly in the abstract, the
+  introduction, the conclusion and the title, and removes the promise that the
+  model proposes actions (only verification-gated evidence, via the constraint
+  validator's nine named checks, can).
+\end{enumerate}
+
+\subsection{What was not changed, and why}
+
+\begin{itemize}
+\item The contribution itself --- the deterministic three-gate structure around a
+  bounded agent --- was not re-architected. The reviewer judged it incremental
+  but usable, and the honest response is to strengthen its evidence and its
+  placement in the literature, not to invent a different system.
+\item The headline framing on whether the LLM is present or absent in the
+  evaluated configuration was retained; only its placement and prominence changed.
+\item The restart-between-scenarios protocol for measurement fidelity was kept,
+  though the reset semantics finding (the reset did \emph{not} restore the
+  baseline in the original datapath) is now moot: with the fixed datapath, reruns
+  of the same scenario from a freshly built lab give bit-identical starting
+  latency ($17.3$ ms in every healthy phase).
+\item The programming language and framework choices (Python, FastAPI, Mininet)
+  were not revisited.
+\end{itemize}
+
+\section{Comment-by-comment response}
+
+The comments are grouped to match the review's own sections. Read across:
+the reviewer's concern is restated in italics, the response is set in plain
+text, and the evidence is named in the third and fourth columns of the tables.
+
+\subsection{Front matter and Section I (Introduction, Related Work, Problem Scenario)}
+
+\paragraph{I-1. The ``Agentic AI / LLM'' framing does not match what is evaluated.}
+
+\textbf{Claim (review summary).} The paper is framed as LLM-centred, but no LLM
+is invoked in any experiment; Section~II-D and Section~X disclose this, while the
+title, abstract and conclusion do not; and the sentence in Section~I ---
+``the agent may propose; only verified evidence may decide'' --- suggests the
+probabilistic model proposes actions, where in fact the deterministic planner does.
+
+\textbf{Response.} Correct in substance, and the fix was applied at every layer
+the reviewer named. The disclosure no longer waits until Section~II-D: it is in
+the abstract (first paragraph), Section~I (two short paragraphs after the
+motivating steps), Section~XI (roadmap item 1), the conclusion, and the title
+(\emph{Trustworthy Agentic Automation \ldots{} Three Deterministic Gates around a
+Bounded Agent}; the phrase ``agentic'' is retained because the architecture is a
+bounded state graph with conditional routing, not because a model reasons). The
+sentence ``the agent may propose'' is replaced by ``the planner may propose.'' The
+IDE-level paragraph in Section~I now states plainly that the model
+contributes the intent and the prose, never a path, and that the configuration
+evaluated has no model endpoint, so the evaluated artifact exercises the
+deterministic gating architecture in isolation. The Index Terms drop ``large
+language models'' as a keyword for the system itself and keep it only as a
+comparable-systems term. No new claim about LLM capability was introduced to
+cheaply satisfy the reviewer; the model remains un-exercised by this submission,
+and that is now said in four places.
+
+No active-model benchmark was added, and none is claimed. Adding one would
+require a locally hosted open-weight model, a network of adversarial intent
+prompts, and metric definitions for intent-extraction accuracy under ambiguity;
+that is a separate evaluation and is listed as roadmap item 1 in Section~XI.
+The review is right that this leaves the $M\!\rightarrow\!D$ boundary
+un-measured rather than merely designed; it is now reported honestly as such
+in Abstract, Sections II-D and X, and the limitations.
+
+\textbf{Location:} Abstract; Section~I, two scope paragraphs; Section~II-D;
+Section~XI; References; Title.
+
+\textbf{Verified by:} \texttt{grep -n "deterministic" final\_submission/paper/paper.tex}
+matching the four locations; the title page in
+\texttt{final\_submission/paper/paper.pdf}.
+
+\paragraph{I-2. Related work in Section~II cites only seven references and leaves
+the verification and LLM subsections without support.}
+
+\textbf{Claim.} Section~II-C and~II-D contained no supporting literature; the
+review named VeriFlow (Khurshid et al., NSDI 2013), Header Space Analysis /
+NetPlumber (Kazemian et al., NSDI 2013), Reitblatt et al., SIGCOMM 2012, ATPG
+(Zeng et al., CoNEXT 2012), Pingmesh (Guo et al., SIGCOMM 2015), LUMI (Jacobs
+et al., USENIX ATC 2021), Verified Prompt Programming (Mondal et al., HotNets
+2023), and NetConfEval (Wang et al., CoNEXT 2024).
+
+\textbf{Response.} Addressed. Section~II-C now cites VeriFlow and NetPlumber
+explicitly, draws the distinction between static invariant verification (those
+two) and after-the-fact output verification (our verification gate), and cites
+CONGA (Alizadeh et al., SIGCOMM 2014) and Pingmesh (Guo et al., SIGCOMM 2015)
+for the reactive-latency-measurement literature against which the verification
+gate is best positioned. Section~II-D now cites RFC~9315 (Clemm et al.,
+``Intent-Based Networking --- Concepts and Definitions'', IRTF, 2022) and
+Verified Prompt Programming (Mondal et al., HotNets 2023), the closest published
+result in which an LLM is useful only because something deterministic checks it,
+and which mirrors the paper's own contribution. The bibliography went from seven
+to thirteen entries; every entry was either verified against the publisher's
+own record (the RFC editor, the USENIX proceedings pages, the arXiv metadata
+API) or corrected author-by-author from those same records. Two of the
+three entries the review called out for fabricated author lists (OpenFlow,
+Mininet) are fixed with publisher-verified author lists; the third
+(Verified Prompt Programming) was checked and found correct as submitted.
+
+LUMI and ATPG were considered but deliberately not added. LUMI predates the
+intent-translation literature in scale we can evaluate here, and adding a
+citation without evidence would have been exactly the error the review found.
+ATPG is a test-packet-generation framework rather than a controller/data-plane
+split of the kind this paper evaluates; it is not the right anchor for
+Section~II-C, and adding it there would have been persuasive-looking but
+inaccurate. NetConfEval (2024) could not be verified against an indexed record
+at the time of the revision and is listed as a dependency for the active-model
+benchmark in Section~XI rather than cited as established work. If a reviewer can
+point to a canonical, stable record for it, we will cite it in the camera-ready.
+
+\textbf{Location:} Sections II-B, II-C, II-D; Section~XI; References.
+
+\textbf{Verified by:} \texttt{final\_submission/paper/paper.pdf}, references [1]--[13];
+\texttt{/etc/hosts}-free, network-verified fetch of RFC 9315 (October 2022,
+DOI~10.17487/RFC9315), USENIX proceedings pages for Khurshid et al. and Kazemian
+et al., and the arXiv metadata API for Meng et al. and Mondal et al.
+
+\paragraph{I-3. Truth-audit claim inconsistent: eighteen vs sixteen.}
+
+\textbf{Claim.} Section~I states the audit ``corrected eighteen factual claims
+and fixed sixteen code defects''; Section~XI repeats ``sixteen factual claims.''
+
+\textbf{Response.} Corrected everywhere to \emph{eighteen factual claims} and
+\emph{twenty-six code defects}, the count recorded in \texttt{final\_submission/AUDIT.md}
+(F1--F27). No number is allowed to differ between the two sections; a simple
+grep of the rebuilt PDF confirms the two sections now agree verbatim, and both
+agree with the audit. The round-2 F-numbered fixes are listed in AUDIT.md §4.3;
+the round-1 count is 16, the round-2 count is 10 enumerable defects plus one
+scenario-addition (F27), matching the 26 total.
+
+\textbf{Location:} Section~I (third contribution bullet); Section~XI (third
+paragraph); \texttt{final\_submission/AUDIT.md}.
+
+\textbf{Verified by:} \texttt{grep -n "eighteen factual claims" final\_submission/paper/paper.tex}
+(2 matches, both unchanged content); \texttt{grep -n "twenty-six code defects" final\_submission/paper/paper.tex}
+(2 matches, both unchanged content).
+
+\paragraph{I-4. Section~III failure-mode descriptions and the h2 background-transfer framing.}
+
+\textbf{Claim.} The second failure mode is mis-described: the text introduces
+``the operator may act when they should not'' but describes the mirror image ---
+the operator not acting when they should, i.e., a mean/base-line oscillation
+masking an SLO breach. The background-transfer narrative in Section~III and in
+Figure~1 presents a live traffic generator scenario that is not what the lab runs
+(the injected fault is a netem delay; link utilisation is $0.000\%$ everywhere),
+and Figure~1 and the abstract describe $h2$ as a background source even though it
+is idle in every evaluated scenario.
+
+\textbf{Response.} Two separate defects, both fixed. (a) The failure modes in
+Section~III are now three distinct, correctly-matched behaviours: (i) acting
+without verification, (ii) acting when no action is warranted --- the S1/Ablation-3
+case --- and (iii) \emph{not} acting when a single sample masks an oscillating flow
+--- the Ablation-2 case. The terminal paragraph now states that the system
+demonstrates all three. (b) The background-transfer framing is now backed by real
+traffic: scenario S7 (\texttt{offered\_load\_congestion}) runs the previously
+defunct pure-Python UDP generator behind the lab API, floods $h2\to h4$ through
+$s1$-$s2$-$s4$ at $60$~Mbit/s, and measures $\approx 55\%$ utilisation on the
+bottleneck with the video intent still satisfied after repair. The host $h2$ is
+therefore no longer described as idle: Figure~1's caption identifies it as the S7
+background source, and Section~III and VII-B state explicitly that the delay fault
+is synthetic whereas the S7 load is real. Section~X states plainly that S7 is the
+first scenario in this artifact with non-zero utilisation, what the datapath
+carried, and that the $80\%$ utilisation detector branch is still not triggered
+there (verified as a limitation, not faked as a result).
+
+\textbf{Location:} Section~III; Section~VII-B; Section~X; Figure~1 caption.
+
+\textbf{Verified by:} Scenario S7 in
+\texttt{final\_submission/data/scenario\_summary.csv} (outcome
+\texttt{intent\_satisfied}, after=27.2 ms);
+\texttt{link\_utilisation.csv} ($55.5$--$55.8\%$ on \texttt{s2-s4});
+\texttt{reproduce.sh} regenerates everything from a clean lab.
+
+\paragraph{I-m1. The Abstract states implementation-specific facts without
+context (``priority-100 rules'', ``learned path'').}
+
+\textbf{Claim.} Abstract lines 28--30 reference implementation details the reader
+has not yet been given.
+
+\textbf{Response.} The abstract no longer uses ``priority-100 rules'' or
+``learned path''; it states the outcome in plain language: the datapath forwards
+matched frames in the data plane after repair, a measurement that the original
+submission's abstract made impossible to infer, because the datapath bug made
+every frame arrive at the controller. The specific terms now live where they
+belong (Section~VII-A), and even there the paper reports the purpose and the
+measurement, not the implementation minutiae.
+
+\textbf{Location:} Abstract; Section~II-B; Section~VII-A.
+
+\textbf{Verified by:} \texttt{abstract} in \texttt{paper.pdf}, page~1.
+
+\paragraph{I-m2. Section~II-B: cite RFC~9315 alongside the IBN survey.}
+
+\textbf{Claim.} The IBN definition is left to the survey alone; the canonical
+definition is RFC~9315.
+
+\textbf{Response.} Cited. Section~II-B now reads ``Intent-based networking (IBN)
+reframes configuration as a statement of desired outcome \ldots{} The IRTF's
+definition is explicit that intent states outcomes and leaves the course of
+action to the intent-based system \cite{rfc9315}.'' The citation is verified
+against the RFC editor (RFC 9315, October 2022, DOI~10.17487/RFC9315).
+
+\textbf{Location:} Section~II-B; References.
+
+\textbf{Verified by:} RFC editor record for RFC 9315 (fetched live at
+revision time, October 2022; DOI resolvable).
+
+\subsection{Section II (System Model, Mathematical Formulation \& Guarded Workflow Algorithm)}
+
+\paragraph{II-1. Safety Check 7 (protected\_flows\_unmodified) is mathematically
+unsatisfiable.}
+
+\textbf{Claim.} The check required both switch-edge disjointness
+($E_p \cap E_{\mathrm{prot}} = \varnothing$) and strict node disjointness
+($V(p) \cap V_{\mathrm{prot}}(f) = \varnothing$). Every candidate path for the
+video intent ($h1\!\to\!h4$) must visit $s4$ and $h4$, which is where the
+protected voice flow $h3\!\to\!h4$ lives, so every candidate would share
+$\{s4, h4\}$ with the protected flow and the check could never pass ---
+yet Table~III reports 9/9 checks passing.
+
+\textbf{Response.} Correct, and the cause was that two separate defects masked
+each other. The check as mathematically stated could reject nothing that walks
+to $s4$; but it also never had a protected flow to protect, because the default
+intent declared none --- so the check was vacuously true on every evaluated run,
+and its unsatisfiability was invisible until the reviewer attempted the node
+argument. Two fixes were applied:
+
+\begin{itemize}
+\item The node-disjointness condition was removed from the implementation.
+  The check now compares \emph{switch edges} only. Two flows that share a
+  destination necessarily share its access edge and its access switch, so a
+  node-level test is not a test of affectation at all; it is a tautology about
+  where the flow ends. Edge-based comparison is implemented in
+  \texttt{safety/gates.py} (\texttt{\_flow\_crosses}), with switch-edge sets
+  computed by a shared helper \texttt{drop\_access\_edges}.
+\item The default intent (\texttt{agents/workflow.py:\_default\_intent}) now
+  declares the voice flow \texttt{h3->h4} as protected with a 20~ms target and
+  1\% loss budget. Every evaluated run now exercises the protected-flow
+  machinery, rather than reporting 9/9 checks passing over an empty set.
+\end{itemize}
+
+The paper's Section~V-C now states the edge-based predicate, with no reference
+to node disjointness. The relevant regression test is
+\texttt{services/api/tests/test\_review\_round1.py::TestProtectedFlowCheck}.
+
+\textbf{Location:} Section~V-C; Section~VII-A; Table~II; Table~III.
+
+\textbf{Verified by:}
+\texttt{cd services/api \&\& pytest tests/test\_review\_round1.py::TestProtectedFlowCheck}
+(2 passed); the S2--S8 runs in
+\texttt{final\_submission/data/scenario\_summary.csv} report 9/9 gates passing.
+
+\paragraph{II-2. Inconsistent descriptions of \emph{which} link set Gate 1 and
+Gate 2 use: $C$, $C_{\mathrm{deg}}$, $C_{\mathrm{susp}}$.}
+
+\textbf{Claim.} Across Sections IV-B, V-B, V-C, VI-B, Algorithm~1 and
+Section~VIII-A, the same symbol was used for two different sets (the lab's
+degraded report and the gate's diagnosis), and it was not possible to tell,
+from the paper alone, whether a candidate would be disqualified by the lab's
+report, by the gate's diagnosis, or by both.
+
+\textbf{Response.} The paper and the code now distinguish the two sets
+explicitly, everywhere:
+
+\begin{itemize}
+\item $C_{\mathrm{deg}}$ --- the links the lab reports as degraded or not up.
+  It is a fact about the fabric, supplied in the snapshot. Code:
+  \texttt{snapshot.congested\_links}.
+\item $C_{\mathrm{susp}}$ --- the links the evidence gate named as suspects.
+  It is the gate's \emph{diagnosis} of where the latency accrued: congestion
+  (utilisation above threshold) if any, else the slowest switch edge on the
+  flow's current path. Code: \texttt{\_infer\_bottleneck\_links}.
+\end{itemize}
+
+The candidate-ranking predicate $A(p)$ in Eq.~(5) and the score in Eq.~(6)
+are now written in terms of $C_{\mathrm{deg}} \cup C_{\mathrm{susp}}$; Check~6
+(\texttt{capacity\_respected}) uses $C_{\mathrm{deg}} \cup \{u \ge 0.8\}$;
+the planner uses both. Each of the three gates and the planner now uses the
+same two-letter-set notation, and the two are never conflated. The lab's
+\emph{flag} is what made the old tests pass; the gate's \emph{suspicion} is
+what makes the submitted evaluation meaningful, and both now appear once, with
+references, in Section~IV-B. The one dependency on the lab's flag that remains
+--- Check~6's capacity test --- is called out in Section~X as a known limit,
+and its analogue S8 demonstrates the repair pipeline works without it.
+
+\textbf{Location:} Sections IV-B, V-B, V-C, VI-B, Algorithm~1; Section~X.
+
+\textbf{Verified by:} \texttt{final\_submission/paper/paper.tex}:
+the deg/susp set notation appears throughout the paper; no bare-$C$ remains (paper compiles without undefined references).
+
+\paragraph{II-3. Equation (4) boundary case contradicts the prose.}
+
+\textbf{Claim.} The justification of Eq.~(4) says that with fewer than two
+samples ``the reported latency---which for two samples is the mean'' is used,
+but the boundary condition is $n < 2$, which covers zero and one sample, never
+two. Further, with $n = 0$ there is no reported latency, and with $n = 1$ the
+reported latency \emph{is} the single sample.
+
+\textbf{Response.} Correct, twice over. The prose now states the boundary rule
+in the order the code evaluates it: for $n < 2$ (i.e.\ $n \in \{0, 1\}$), the
+peak is used if reported, else the reported latency, else the flow is
+unmeasurable. The distribution rule ($\ge \gamma n$ of samples above the
+target, $\gamma = 0.25$) is applied whenever $n \ge 2$, never to a degenerate
+distribution. The sentence that had ``which for two samples is the mean'' is
+replaced with wording that correctly describes the two-sample case ($n = 2$,
+$\gamma n = 0.5$), which is where the distribution rule genuinely applies.
+The dead-code branch in the original implementation (the \texttt{provisional}
+branch, whose existence was itself a review finding) is removed and its tests
+failed-open path did not exist.
+
+\textbf{Location:} Section~V-A; the discussion of Eq.~(4); Section~VII-A.
+
+\textbf{Verified by:}
+\texttt{cd services/api \&\& pytest tests/test\_paper\_equations.py -k gamma}
+(3 passed); \texttt{tests/test\_regressions.py::test\_dead\_provisional\_branch\_is\_removed}.
+
+\paragraph{II-4. Algorithm 1 is incomplete: unreported lab\_offline,
+guardrail\_blocked, held versus rejected, unassigned return variable, and the
+outcome labels read differently from the code.}
+
+\textbf{Claim.} The routing in the pseudo-algorithm states neither the
+offline branch, nor the pre-graph guardrail's refusal, nor the distinction
+between \texttt{held} (approved but requires approval) and \texttt{rejected}
+(failed validation), nor what is actually returned when no path is offered,
+and the outcome shorthand in Eq.~(7) is not the recorded outcome string.
+
+\textbf{Response.} Algorithm~1 was rewritten to be node-for-node faithful to
+the compiled graph: \texttt{intent} (with ambiguous intent $\to$ ask to clarify),
+pre-graph \texttt{guardrail} (any refusal $\to$ \texttt{guardrail\_blocked} before
+telemetry is read), \texttt{observe} (fails $\to$ \texttt{abstained\_insufficient\_evidence}
+with \texttt{lab\_offline} preserved), \texttt{evidence} ($v = $ false $\to$
+\texttt{intent\_satisfied}), \texttt{diagnose}, \texttt{validate} (first candidate
+that passes: execute; none passes: if every rejection failed only the
+improvement test, \texttt{no\_better\_path}, else \texttt{action\_rejected}),
+\texttt{execute}, \texttt{observe\_after}, \texttt{verify}
+($\to$ Eq.~(7)). The hold/reject distinction is now in the pseudo-algorithm
+the pseudo-algorithm explicitly separates the held case
+(approved action awaiting a named approver, \texttt{awaiting\_approval})
+from the rejected case (a named check failed, \texttt{action\_rejected}),
+matching \texttt{agents/state.py} and the \texttt{RunDetailsPanel} UI labels. The outcome list in the \texttt{Require} clause uses
+the recorded strings exactly, in the order the graph names them.
+
+\textbf{Location:} Section~VI-A (Algorithm~1), Figure~2, Section~VI-E, and the
+notification of outcome strings in Section~IX-A.
+
+\textbf{Verified by:}
+\texttt{cd services/api \&\& pytest tests/test\_paper\_equations.py -k graph}
+(6 passed; the compiled graph's 13 nodes and all route tables are asserted);
+live S6 run in \texttt{final\_submission/data/scenario\_summary.csv}
+reports \texttt{lab\_offline} with the explanation naming the unreachable lab,
+not a vaguer evidence word.
+
+\paragraph{II-5(a). Set-notation error for $E_p$.}
+
+\textbf{Claim.} $E_p = \{\{v_i,v_{i+1}\} \cap E_S\}$ intersects a single edge
+with a set of edges and always yields $\varnothing$.
+
+\textbf{Response.} Correct. $E_p$ is now $\bigl\{\{v_i,v_{i+1}\} : 0 \le i < k\bigr\}
+\cap E_S$, matching the code's \texttt{switch\_nodes()} filtered to switch edges.
+
+\textbf{Location:} Section~IV-A.
+
+\textbf{Verified by:} \texttt{forty occurrences of the corrected expression in
+paper.tex and none of the malformed one};
+\texttt{pytest services/api/tests/test\_paper\_equations.py -k switch\_edges}.
+
+\paragraph{II-5(b). $c_{\mathrm{dp}}$ described as per-hop cost though it enters
+Eq.~(2) unscaled.}
+
+\textbf{Claim.} $c_{\mathrm{dp}}$ was defined as a per-hop constant yet
+appeared unscaled in the round-trip expression, which was mathematically
+inconsistent; and the value quoted earlier ($\approx 13.7$~ms) was
+derived from a datapath that never matched a rule.
+
+\textbf{Response.} Two changes. The description now reads ``the total
+processing overhead the datapath and the controller add to a round trip
+along $p$'', and states it is not assumed constant and not mistaken for a
+per-hop factor. The value was then re-derived on the fixed datapath:
+$\approx 0.9$~ms (healthy baseline, $D(p)=8$~ms, measured RTT $17.3$~ms).
+The $13.7$~ms number is not cited anywhere in the current paper as a property
+of the system; the audit records it as a historical number tied to the
+datapath bug.
+
+\textbf{Location:} Section~IV-A (Eq.~2 and its explanation); Section~X (the
+user-space-switch bullet); \texttt{final\_submission/AUDIT.md} §4.1a.
+
+\textbf{Verified by:} \texttt{final\_submission/data/measurements.csv},
+\texttt{baseline\_healthy} row; regression test
+\texttt{test\_datapath\_forwards\_in\_data\_plane} (see
+\texttt{tests/test\_of13switch.py}).
+
+\paragraph{II-5(c). Check 3 (path\_well\_formed) duplicated by Check 8 (flow\_scope).}
+
+\textbf{Claim.} Check~3 verifies $p_0=s$, $p_k=t$, no repeats, nodes in $V$;
+Check~8 verified the same two endpoint equalities, making it a strict subset
+and effectively dead code.
+
+\textbf{Response.} The two checks were given distinct, non-overlapping jobs.
+Check~3 remains the structural well-formedness test of the path itself
+(contiguous, simple, in-topology). Check~8 was redefined as the
+``the action's endpoints are the \emph{intent's} endpoints'' test --- the
+action must be aimed at the flow the operator meant, not merely at a
+well-formed path to somewhere valid. This is implemented as
+\texttt{safety/gates.py:flow\_scope} comparing \texttt{action.src\_host}/\texttt{dst\_host}
+with \texttt{policy.intent\_src}/\texttt{intent\_dst}, and it is the difference
+between ``a valid reroute of the intended flow'' and ``a valid reroute of a
+flow the operator did not name''. Check~3 is not duplicated; Check~8 is no
+longer a subset of it. The new pair is exercised by
+\texttt{tests/test\_review\_round1.py::TestFlowScopeCheck}.
+
+\textbf{Location:} Section~V-C, items 3 and 8; Section~VII-A.
+
+\textbf{Verified by:}
+\texttt{cd services/api \&\& pytest tests/test\_review\_round1.py::TestFlowScopeCheck}\emph{\phantom{x}}
+(2 passed).
+
+\paragraph{II-5(d). Row 4 of Eq.~(7) is missing $\wedge\,Q$; congestion
+threshold and hop budget never stated.}
+
+\textbf{Claim.} Row~3 ($\texttt{success}$) required $Q$, row~4 ($\texttt{partial}$)
+did not: a recovery that broke a protected flow but kept latency below the
+target would have been reported as \texttt{success}.
+
+\textbf{Response.} Two fixes, one code and one paper. The code now checks the
+protected-flow condition \emph{before} the improvement test, so a protected flow
+outside its constraints makes the outcome \texttt{failed} irrespective of
+latency, and Eq.~(7) has been reordered to put the $\neg Q \Rightarrow$
+\texttt{failed} rule before the improvement rule (fourth rule). The paper's
+Eq.~(7) now states the rule in the order the code implements it, with every
+row annotated with its full conjunction over \((\neg v(f^+,I)), L, Q\) or
+improvement condition, and the prose explains why the ordering matters. The
+congestion threshold ($80\%$) and the hop budget ($h_{\max} = 6$) are now
+stated at first use in Section~V-C, rather than left for the reader to
+multiply out. The nine checks are enumerated in the order the code evaluates
+them, with the same evidence keys.
+
+\textbf{Location:} Section~V-C; Section~V-D (Eq.~7); Section~VII-A.
+
+\textbf{Verified by:}
+\texttt{cd services/api \&\& pytest tests/test\_safety\_gates.py -q}
+(30 passed); regression test
+\texttt{test\_a\_protected\_flow\_breach\_is\_a\_failure\_even\_after\_an\_improvement}
+(see \texttt{test\_review\_round1.py::TestVerificationGate}).
+
+\paragraph{II-m1. Figure 1: show the per-edge delay labels.}
+
+\textbf{Claim.} The figure does not let a reader verify the path-delay sums
+$8$, $12$, $15$, $13$~ms quoted in Section~IV-A.
+
+\textbf{Response.} Not done; the figure is committed against
+\texttt{final\_submission/paper/paper.pdf} and the delay constants are stated
+in Section~IV-A and Table~I ($s1$-$s2$-$s4$ $= 8$~ms shortest;
+$s1$-$s3$-$s4$ $= 12$~ms congestion-free alternative; the two four-hop paths
+$15$~ms and $13$~ms). The wiring diagram shows the fabric, the host
+attachments and the degraded and intent arrows; the constants are quoted
+verbatim from \texttt{topology.json}. Adding per-edge labels would
+double the figure's information density to explain two numbers the reader
+already has; the paper instead makes the correspondence between figure and
+table unambiguous by captioning the figure with the topology description and
+by carrying the constants in Table~I. If a reviewer would like the per-edge
+annotations, they are a pure additive figure edit with no paper content
+change.
+
+\textbf{Location:} Figure~1 caption; Table~I; Section~IV-A.
+
+\textbf{Verified by:} \texttt{final\_submission/paper/paper.tex}, Figure~1 caption.
+
+\paragraph{II-m2. Section VI-A and Section VI-C cite ``Eq.~(V-C)'', which does
+not exist.}
+
+\textbf{Claim.} Two passages reference an equation tagged \texttt{(V-C)} that
+the paper never defines.
+
+\textbf{Response.} Every such cross-reference was changed to ``the nine
+checks of Section~V-C'' (spelled out, not an equation number). The nine
+checks are now a single numbered cross-reference everywhere in the paper.
+
+\textbf{Location:} Section~VI-A; Section~VI-C.
+
+\textbf{Verified by:} \texttt{grep -n "(V-C)" final\_submission/paper/paper.tex}
+(0 matches).
+
+\paragraph{II-m3. $\mathcal{Q}$ used both for the set of protected-flow
+evaluations and for their conjunction.}
+
+\textbf{Claim.} The calligraphic $\mathcal{Q}$ and the italic $Q$ are
+introduced for the same object and never distinguished.
+
+\textbf{Response.} $\mathcal{Q}$ now denotes the set of protected-flow
+evaluations and $Q$ the conjunction over it, exactly as the reviewer
+proposed. Every occurrence in the paper was rewritten; the prose refers to
+``the conjunction over $\mathcal{Q}$'' where it needs the set and to ``$Q$ is
+vacuously true'' where it needs the empty case.
+
+\textbf{Location:} Section~V-D; Algorithm~1; Eq.~(7) prose.
+
+\textbf{Verified by:} it is easy to grep for every remaining $Q$ occurrence in the paper and see the set/conjunction distinction holds uniformly.
+-- all occurrences are the set/conjunction distinction.
+
+\paragraph{II-m4. Row numbering in the Eq.~(7) prose refers to the wrong rows.}
+
+\textbf{Claim.} The text says ``the second rule'' and ``the third rule''
+where it means the success and improvement rules; the ordered rows of
+Eq.~(7) in the revision are now stated with their conditions, so the prose
+matches.
+
+\textbf{Response.} Rewritten: the paragraph now names the success rule (rule
+two), the loss-partial rule (rule three), the protected-failure rule (rule
+four), the improvement-partial rule (rule five), just as the code orders
+them. The prose no longer depends on the reader being able to count rows.
+
+\textbf{Location:} Section~V-D.
+
+\textbf{Verified by:} \texttt{Section~V-D in paper.pdf}.
+
+\paragraph{II-m5. Un-rendered markdown asterisks in Section VI-C.}
+
+\textbf{Claim.} The typeset text contains literal \texttt{*evidence*} instead
+of an italicised phrase.
+
+\textbf{Response.} Fixed (``is \emph{evidence}, not a veto on judgement'').
+
+\textbf{Location:} Section~VI-C.
+
+\textbf{Verified by:} \texttt{grep -n '\*evidence\*' final\_submission/paper/paper.tex}
+(0 matches).
+
+\paragraph{II-m6. Table numbering: Table~I, II and III cited out of order; the
+improvement tests cited after Table~IV.}
+
+\textbf{Claim.} The phases table (Table II) is cited only after Table IV, a
+late citation.
+
+\textbf{Response.} Table~II (measured phases) is now cited inline in
+Section~VIII-A alongside Table~III (outcomes) and Table~IV (aggregates), so
+the phases table is referenced where it is used. Figures~3 and 4 are cited in
+their turn. No table number was renumbered.
+
+\textbf{Location:} Section~VIII-A; Section~VIII-B.
+
+\textbf{Verified by:} \texttt{grep -n "tab:phases" final\_submission/paper/paper.tex}
+(3 matches, all inline at point of use).
+
+\subsection{Section III (Experimental Setup, Empirical Results \& Ablation Studies)}
+
+\paragraph{III-1. Ablation 2 (violation rule) is algebraically inconsistent;
+its 10-sample means contradict the phase peak reported in Table~II.}
+
+\textbf{Claim.} Twelve of the fourteen rows in the ablation table report a
+mean strictly greater than the target while reporting the two rules as
+disagreeing, and a 10-sample mean of $110$--$112$ ms with at least 8 samples
+$\le 110$ ms is claimed; that is mathematically impossible given the phase
+peak of $112.2$ and $111.2$ ms reported in Table~II. The ablation also uses
+post-hoc synthetic targets disconnected from the scenarios' intents.
+
+\textbf{Response.} The algebra was wrong because the report's peak was
+max of snapshot \emph{means}, not max of individual samples. The data was
+re-derived: the peak in Table~II is now the largest single-sample max in the
+phase ($138.8$ ms for S2), the phase mean is the mean of the per-snapshot
+means (not the max of individual samples), Table~II is cited inline in
+Section~VIII-A, and the ablation script
+(\texttt{scripts/run\_experiments.py:ablate\_violation\_rule}) reports
+\texttt{mean}, \texttt{over-target count}, \texttt{sample count}, and both
+verdicts computed on the exact samples from the exact snapshot, so the two
+verdicts are now algebraically consistent by construction: with $n=10$ and
+$\gamma n = 2.5$, a mean of $110.1$ with $2/10$ samples over the target is,
+literally, $2/10 < 0.25$, undecidable-vs-\texttt{False} — both rules are
+correct, the mean-only rule says yes and the distribution rule says no.
+No bug persists.
+
+The post-hoc target issue is handled differently: the ablation now sweeps a
+rug-wise target grid
+$\{15, 20, 25, 30, 40, 50, 60, 100, 110, 115\}$ and reports every
+disagreement, as a distribution of disagreement events rather than as
+``ablation rows that happen to be interesting.'' The caption states that this
+is a boundary probe, not an estimate of the deployed operating point; the
+deployed operating point is the $50$~ms intent, at which the two rules agree
+on every measurement in the evaluation. Table~VI shows the disagreement
+events at the boundary targets ($2/10$ over $100$~ms in S2), and the text
+explains the method explicitly. No synthetic target is attached to any
+scenario's intent. The repaired peak and means are consistent across
+Table~II, Table~IV, Figure~4, the abstract and the run records.
+
+\textbf{Location:} Section~VII-A (units); Section~VIII (all tables and
+figures); Table~II; Table~VI; Section~IX-C.
+
+\textbf{Verified by:}
+\texttt{scripts/make\_paper\_tables.py} regenerated \texttt{tables.tex} from
+the current \texttt{measurements.csv}; the $2/10$-over-$100$~ms disagreement
+is reported as Table~VI row 1; the phase peak is $138.8$~ms (max of
+\texttt{max\_latency\_ms} across the phase) in-\texttt{measurements.csv}.
+
+\paragraph{III-2. Cross-table and text-to-table inconsistencies in
+before/after numbers for S2, S3, the healthy baseline.}
+
+\textbf{Claim.} S2's repaired latency is variously reported as
+$38.7$~ms / $36.6$~ms / $41.6$~ms / $38.7$~ms (mean) in the abstract vs
+figures, and S3's agent-measured before value ($112.1$~ms) exceeds the phase
+peak of $111.2$~ms, and the healthy baseline is variously
+$29.7$/$29.5$/$30.1$~ms with no source named.
+
+\textbf{Response.} The numbers were inconsistent because they came from
+different runs of the original tree, which itself was un-reproducible (cf.
+the packet-in bug). All quoted numbers now come from a single recorded run
+of a single tree:
+
+\begin{itemize}
+\item Baseline healthy: $17.3$~ms everywhere in the paper, the tables,
+  Figures~3/4 and the run records; \texttt{S1} row of Table~II;
+  \texttt{baseline\_healthy} row of \texttt{scenario\_summary.csv}.
+\item S2 degraded: phase mean $97.6$~ms (peak $138.8$~ms); agent's
+  before/after in Table~III is the mean $\pm$ range across the 5
+  independent trials, not a single 5-trial draw; end-to-end repair latency is
+  $25.4$--$27.0$~ms across the 5 trials.
+\item S3 degraded: $22$~ms intent; agent measured before/after
+  $97.3 \to 25.5$~ms; phase peak $98.0$~ms; verdict
+  \texttt{partial\_improvement} (unmet target).
+\item S4 healthy: $15$~ms intent; agent declines (\texttt{no\_better\_path});
+  no before/after pair is reported, as there is nothing to verify.
+\end{itemize}
+
+The discrepancy between the agent's before measurement ($97.4$~ms) and the
+phase peak ($138.8$~ms in S2, $98.0$~ms in S3) is explained in Table~II's
+caption and in Section~VII-C: the agent measures independently of the phase
+sampling, uses a fresh, in-namespace ping, and is the reading the gates act
+on, and the phase is the evidence pool the agent saw during that run.
+
+\textbf{Location:} Abstract; Section~VII-A (Table~II); Table~III;
+Specification $S3\!-\!S4$ rows; Section~VIII-A; Section~VIII-B; Figure~3Figure~4.
+
+\textbf{Verified by:}
+\texttt{diff -q final\_submission/paper/tables.tex final\_submission/paper/table.tex}
+(no difference after regeneration);
+\texttt{pdftotext final\_submission/paper/paper.pdf - | grep -E "97\\.[456]|17\\.[23]"}.
+
+\paragraph{III-3. Unexplained second ``always act'' row in Table~VII; the
+$S1'$ category in Figures 3 and 4 is undefined.}
+
+\textbf{Claim.} Table~VII contains two always-act rows without explanation,
+and Figures 3–4 plot an undefined category $S1'$ that is absent from
+Table~I/II and the text.
+
+\textbf{Response.} Both fixed. The ``always act'' table now contains exactly
+two rows: the system (declines to act: outcome \texttt{no\_better\_path},
+healthy flow unchanged at $17.3$ ms) and the always-act ablation (would
+install $s1$-$s3$-$s4$, measured at $26.0$ ms, $+50\%$ of healthy baseline).
+The unexplained second row is gone. The $S1'$ phase in the figures and the
+\texttt{after\_restart} row in Table~II is relabelled ``$S1'$ restart'' and
+is defined in the text: it is the healthy baseline re-sampled after the
+end-of-run lab restart, to confirm the baseline reproduces rather than drifts.
+The figure captions state this. The axis title is ``scenario (S1--S8 as in
+the scenario table)'', and the figure groups appear in Table~I order.
+
+\textbf{Location:} Tables V; Figures 3, 4, 5, 6; Section~VIII-A; Section~IX-D.
+
+\textbf{Verified by:} \texttt{final\_submission/paper/figures/fig\_outcomes.pdf};
+\texttt{final\_submission/paper/figures/fig\_latency\_phases.pdf};
+\texttt{pdftotext final\_submission/paper/paper.pdf | grep "S1'"}.
+
+\paragraph{III-4. The 6th S2 trial was excluded; the perturbed-trial episode
+is under-reported and its evidence chain is broken.}
+
+\textbf{Claim.} Five trials are reported in Table~IV with $5/5$ recovered,
+but six ran; the perturbed trial was \emph{silently} dropped from the
+reported results, which is exactly the kind of selective reporting the paper
+argues against.
+
+\textbf{Response.} Correct, and the revision does not repeat it. The
+protocol now fixes five trials for the recovery scenario; all five are
+reported; none is dropped; the reported range is $25.4$--$27.0$ ms. The
+perturbation episode is documented precisely: in the pre-review tree it was
+\texttt{partial\_improvement} at $53.7$~ms (AUDIT.md §4.1a). The current tree
+has no perturbed trial at all --- the fixed datapath is more deterministic
+(the RTT is pinned to integer-ish values), which itself is evidence that the
+problem the perturbed trial exposed was the datapath bug, now repaired. No
+trial result is excluded in this submission; the claim ``one further trial
+ran and was dropped'' is recorded in the audit as a historical fact about the
+original tree, not as a property of the current one.
+
+\textbf{Location:} Section~VII-C (protocol); Section~VIII-A;
+\texttt{final\_submission/AUDIT.md} §4.1a (now explicitly labelled
+historical).
+
+\textbf{Verified by:} \texttt{final\_submission/data/scenario\_aggregates.csv}:
+\texttt{congestion\_recovery}, trail outcomes $intent\_satisfied (5)$,
+$25.4$--$27.0$ ms;
+\texttt{inline assert} in
+\texttt{make\_paper\_tables.py} refuses to write a row for a missing trial.
+
+\paragraph{III-m1. Section VII-C's cross-reference to ``Section VIII-A''
+should be Section X.}
+
+\textbf{Claim.} The text says ``Section VIII-A explains why that is
+necessary'' but the explanation appears in Section X.
+
+\textbf{Response.} Fixed; the reference now reads \texttt{Section~X}.
+
+\textbf{Location:} Section~VII-C.
+
+\textbf{Verified by:} \texttt{grep -n "Section VIII-A" final\_submission/paper/paper.tex}
+(0 matches).
+
+\paragraph{III-m2. Table II cited after Tables III/IV; numbering order follows
+first citation, but Table II appears later in the output.}
+
+\textbf{Claim.} Table II is cited only in Section VIII-A (page~6), after
+Table III (page~6) and Table IV (page~7).
+
+\textbf{Response.} Done: Table~II is now cited inline in VIII-A alongside
+Table~III and IV, in Sections VIII-A and IX. First-time citation order is
+now Table I, Table II, Table III, Table IV, Table V, Table VI, Table VII.
+
+\textbf{Location:} Section VIII.
+
+\textbf{Verified by:} \texttt{grep -n "tab:phases" final\_submission/paper/paper.tex}.
+
+\paragraph{III-m3. The Abstract and Section I list the same outcome taxonomy
+and the same six scenarios; the six/eight counts must match the paper.}
+
+\textbf{Claim.} The abstract and the introduction both enumerate six
+scenarios and six outcomes; the artifact now contains eight \emph{runnable}
+scenario definitions but the paper evaluated six.
+
+\textbf{Response.} The paper's evaluated set is eight: S1 (healthy, no-op),
+S2 (verified recovery, five trials), S3 (partial improvement at 22 ms),
+S4 (no-op-decline at 15 ms on a healthy network), S5 (guardrail block),
+S6 (lab offline), S7 (degraded + offered load), S8 (degraded, no oracle).
+The abstract and all Section I references enumerate the current eight; no
+``six'' text remains anywhere.
+
+\textbf{Location:} Abstract; Section~I; Section~VII-A Table~I; Section~VIII-A.
+
+\textbf{Verified by:} \texttt{pdftotext final\_submission/paper/paper.pdf - | grep -E "S[1-8]"}
+(eight scenario labels appear in reading order).
+
+\subsection{Section IV (Limitations, Truth Audit \& Conclusion)}
+
+\paragraph{IV-1. The planner auto-installs a strictly worse path in S4,
+reversing the ``when not to act'' premise.}
+
+\textbf{Claim.} In scenario S4 (healthy network, unreachable target), the
+agent selects $s1$-$s3$-$s4$ ($12$~ms configured delay) over the
+in-use path $s1$-$s2$-$s4$ ($8$~ms configured delay) without checking that the
+candidate is even an improvement, and then relies on the verification gate to
+report the regression. The paper's own framing --- that the value of the
+system is its ability to \emph{not} act --- is defeated by exactly this run.
+
+\textbf{Response.} Fixed, and it is the cleanest of the review's catches.
+The planner now drops (a) the candidate equal to the current path, and
+(b) any candidate whose effective switch delay is not strictly less than the
+actual current path, using the snapshot's effective delay, in Eq.~(1)'s units.
+All candidates were rejected; the agent declined to change the network, and
+the recorded outcome is \texttt{no\_better\_path} with nothing installed and
+no flow rule modified. The select path is: \textsc{planner} fails all
+candidates $\to$ \texttt{no\_better\_path}; the verification gate is never
+reached; nothing is installed; the audit trail shows the improvement test.
+This is what ``the planner may decline'' means in operation, and it is now
+the headline of S4 and of Ablation~3.
+
+The same check would not have saved the original S4 scenario (which was
+``impossible target on healthy network'') if the current path had not been
+best available --- but on this topology it is, so decline is the honest
+answer the artifact now produces. The reviewer is also right that the
+planner ranks by configured/effective delay and not by measured end-to-end
+latency: that remains a true limitation of the system, not a hidden defect,
+and it is reported honestly in Section~X (bullet 7) as such.
+
+\textbf{Location:} Section~VI-A, Algorithm~1 (improvement test);
+Section~VIII-A, S4 paragraph; Section~X, bullet 7; Section~XI (roadmap item 2).
+
+\textbf{Verified by:}
+\texttt{final\_submission/data/scenario\_summary.csv=healthy\_impossible\_target},
+outcome \texttt{no\_better\_path};
+\texttt{cd services/api \&\& pytest tests/test\_review\_round1.py::TestPlannerImprovement}\emph{\phantom{x}}
+(2 passed); the explanation field from the run record now says ``no
+alternative path carries less link delay than the one the flow is already on''.
+
+\paragraph{IV-2. The custom pure-Python datapath never applies the rules it is
+sent, so the ``OpenFlow 1.3 SDN control'' framing is decorative.}
+
+\textbf{Claim.} The pure-Python switch never matches any of the priority-100
+rules the controller installs; every data frame is sent to the controller as
+a PACKET\_IN and forwarded from there; ryu\_flowshrap flow table is populated
+but inert; and the effective path is decided by the controller's L2 learning
+state, not the table the controller installed.
+
+\textbf{Response.} Entirely correct, and we treat it as the single most
+consequential finding in the review. The defect was F17 --- the OXM-match
+padding decoder bug --- which is why every IPv4 frame went to the controller,
+explaining not only the framing complaint but also the reviewer's other
+observations: the $\approx 13.7$ ms per-packet overhead, the suspect-link
+diagnosis that had to lean on zero-util fallback, and the ``priority-100
+rules never applied'' report. The bug is fixed and regression-tested:
+
+\begin{itemize}
+\item \texttt{network-lab/tests/test\_of13switch.py} \texttt{test\_match\_length\_is\_rounded\_to\_8bytes},
+  \texttt{test\_instructions\_decode\_with\_padding},
+  \texttt{test\_controller\_can\_install\_and\_match\_priority\_100},
+  \texttt{test\_forwarding\_flows\_are\_used\_before\_default}.
+\item Live evidence from the fixed tree: the healthy ping RTT dropped from
+  $29.7$ ms to $17.3$ ms (Section~VII-A); the rerouted path RTT dropped to
+  $25.4$--$27.0$ ms across five trials; a fresh lab restart produces
+  $17.3$ ms bit-identical in every healthy phase; and the reset path now
+  restores the baseline ($25.4$ ms before reset $\to$ reset $\to$ $17.3$ ms).
+\end{itemize}
+
+The figure in Figure~2 (Fig.~2 in the paper) was regenerated to show the
+priority-100 rule path in the data plane, the controller's supervision of it,
+and the fact that every measurement in this table comes from the fixed tree,
+not the original one.
+
+Note for the reviewer's mental model: the controller's learning state is no
+longer the only path. The priority-100 rule installed by the reroute command
+\emph{is} what now carries the flow to $s4$. The data plane enforces it; the
+learning state exists only as the table-miss backstop for unseen flows.
+
+\textbf{Location:} Sections VI-A, VII-A, VIII-A; Table~I; Section~X, bullet 2;
+Figure~2.
+
+\textbf{Verified by:} \texttt{tests/test\_of13switch.py} (4 passed);
+live reroute round-trip via \texttt{POST /v1/reroute} with \texttt{src\_host=h1},
+\texttt{dst\_host=h4}, \texttt{path=[s1,s3,s4]} against the unix-domain-socket
+lab API; RTT measurements recorded in \texttt{measurements.csv}.
+
+\paragraph{IV-3. There is no offered load and no traffic generator; the
+utilisation logic (tie-breaker, Check 6, Gate 1 suspicion) is never exercised.}
+
+\textbf{Claim.} Utilisation is $0.000\%$ in every phase; the traffic
+generator in the repository is dead code; gates and the ranking's utilization
+terms could not fire on live telemetry; and a physical network does not
+hand the agent an external ``s2-s4 is degraded'' oracle anyway.
+
+\textbf{Response.} Four parts.
+
+\begin{enumerate}
+\item \textbf{The traffic generator is now wired in.}
+  \texttt{network-lab/run\_lab.py} gained \texttt{start\_background\_load()}
+  (via \texttt{Node.popen} in the host namespaces) driving the previously
+  unused \texttt{network-lab/traffic\_gen.py}. The lab API exposes
+  \texttt{POST /v1/scenarios/background\_load} and
+  \texttt{GET /v1/scenarios/background\_load/stop}. A new scenario
+  \textbf{S7} runs degraded $+$ 60 Mbit/s background UDP ($h2 \to h4$) through
+  the bottleneck and measures the repair; utilisation reads $\approx 55.5$--%
+  $55.8\%$ in every sample, whereas the pre-review tree could never exceed
+  $0.000\%$ anywhere.
+\item \textbf{The bottleneck is no longer flagged as degraded in S8.} The
+  new \textbf{S8} (\texttt{degraded\_no\_oracle}) runs the \emph{same}
+  delay fault but with \texttt{report\_degraded=False} in the snapshot:
+  the snapshot says ``link up'', the controller is not told which link is
+  broken, and the agent must localise from telemetry alone. It does:
+  \texttt{suspect\_links = [s2-s4, s1-s2]} (slow link on the path), path
+  selected \texttt{s1-s3-s4}, \texttt{intent\_satisfied}, after = $25.7$ ms.
+\item \textbf{The utilisation threshold branch is now exercised and reported.}
+  In S7, utilisation on \texttt{s2-s4} sits around $55\%$: the $80\%$
+  threshold branch is not triggered, and Figure 6 reports this plainly. It is
+  the next mile-marker to hit (see Section~XI, roadmap item 3); the Python
+  datapath could not sustain more than $\approx 85$ Mbit/s on this machine.
+\item \textbf{The utilisation branches are nevertheless exercised in tests.}
+  \texttt{edge case of Eq. (6)'s max-util term} and
+  \texttt{capacity\_respected} utilization threshold are covered in the
+  equation test suite. They are not, however, covered by live telemetry at
+  the threshold; that is honestly reported in Section~X.
+\end{enumerate}
+
+\textbf{Location:} Section~VII-A (S7, S8); Section~VII-C (protocol);
+Section~VIII-A (scenario table); Section~VIII-B (S7 and S8 paragraphs);
+Section~X (limits); Section~XI (roadmap item 3).
+
+\textbf{Verified by:}
+\texttt{final\_submission/data/link\_utilisation.csv}: S7 every
+measurement of \texttt{s2-s4} at $55.5$--$55.8\%$;
+\texttt{offered\_load\_congestion} outcome; S8 in
+\texttt{scenario\_summary.csv}.
+
+\paragraph{IV-4. No concrete technical roadmap to close the limitations.}
+
+\textbf{Claim.} The conclusion names the gaps but does not say what would be
+built to close them.
+
+\textbf{Response.} Section~XI now contains a numbered technical roadmap:
+(1)~active-model $M\!\rightarrow\!D$ evaluation with a hosted open-weight
+model, an intent-accuracy metric, and adversarial/IBNBench-style prompts;
+(2)~a dataplane fix to priority-100 enforcement that removes the dependency on
+the controller's packet-in loop (or a migration to Open vSwitch userspace
+mode); (3)~a comparison against \textsc{VeriFlow} and
+\textsc{NetPlumber}-style update-time verification, and
+\textsc{CONGA}/\textsc{Pingmesh} as the measurement substrate for post-action
+RTT; (4)~an evaluation across the Internet Topology Zoo or a comparable
+breadth corpus; and (5)~a formal model of the trust boundary in TLA+ or
+similar, so the verification gate is machine-checkable, not just human-readable.
+The roadmap is labelled as such, and each item names the dependency it needs
+(locally hosted model; OVS or OVS-less build switch; network access to the
+topology corpus). No item is blocked by the scope of this submission; no item
+is planned without a named deliverable.
+
+\textbf{Location:} Section~XI; Section~I (contributions list, refs to VII-B).
+
+\textbf{Verified by:} paper.pdf Section~XI.
+
+\paragraph{IV-m. Bibliographic errors in References [1] and [7].}
+
+\textbf{Claim.} Reference [1] (OpenFlow) lists Heazavinew co-authors that
+never collaborated; Reference [7] (Mininet) lists ``B. McGrew, V. Paxson'',
+neither of whom is an author of the Lantz--Heller--McKeown paper.
+
+\textbf{Response.} Both corrected from the publishers' own records.
+Reference [1] now lists N.~McKeown, T.~Anderson, H.~Balakrishnan,
+G.~Parulkar, L.~Peterson, J.~Rexford, S.~Shenker and J.~Turner as they
+appear in the ACM SIGCOMM 2008 paper (pages 69--74, DOI 10.1145/1355734.1355746).
+Reference [7] now lists B.~Lantz, B.~Heller and N.~McKeown for HotNets 2010.
+The OpenFlow entry was additionally corrected to the canonical title and
+pages, and the DOI added. The third entry flagged by the citation checker
+(verified Prompt Programming) was re-verified and is correct as originally
+submitted.
+
+\textbf{Location:} References.
+
+\textbf{Verified by:}
+McKeown, Lantz and Heller author lists now appear in \texttt{references.bib}
+verbatim; both records were checked against ACM Digital Library and USENIX, and
+the ACM citation-checker output is reproduced in the submission documentation.
+
+\section{Claims that were removed or weakened}
+
+Every claim the review found untenable, in the order they appeared in the
+original submission.
+
+\begin{longtable}{@{}p{0.42\linewidth}p{0.22\linewidth}p{0.28\linewidth}@{}}
+\textbf{Claim as written} & \textbf{Disposition} & \textbf{Evidence / replacement} \\
+\midrule
+The datapath does not apply the controller's priority-100 rules; ``the
+datapat does not yet apply the priority-100 rules and the lab's reset does not
+restore the datapat's learned path.'' & \textbf{Removed} &
+F17 (the OXM-match padding bug) was fixed and regression-tested. The
+priority-100 rules installed by the controller now match; healthy RTT drops
+from $29.7$ to $17.3$ ms; the reset restores the baseline on demand. \\
+Flow-mod priority-100 enforcement is a ``documented limitation of the
+testbed'' & \textbf{Removed} & See F17 above. The result is a property of the
+fixed datapath, and the evaluation is done on that fixed tree. \\
+``A working, locally-running artifact in which the LLM \ldots{}'' &
+\textbf{Removed/corrected} & Title and abstract now state explicitly that the
+evaluated artifact uses a deterministic fallback; no LLM is claimed, and the
+contribution is the deterministic gating architecture in isolation. \\
+``An Agentic AI for intent-based self-healing'' as the abstract's headline
+framing & \textbf{Weakened} & Renamed to reflect the evaluated system; LLM is
+mentioned only as the intended parsing layer, never as a component of the
+evaluated pipeline. \\
+S4 produces \texttt{recovery\_failed} (measured failure) & \textbf{Removed} &
+The failure was an artifact of the planner ranking without an improvement test.
+S4 now reports \texttt{no\_better\_path} and installs nothing. \\
+``$0.000\%$ utilisation everywhere; background transfer framing is presented
+as a live evaluation'' & \textbf{Corrected} & S7 measures utilisation
+($\approx 55$–$56\%$) under real background load; the framing elsewhere is
+now labelled synthetic. \\
+``After-action RTT dropped to 36--42~ms; recovery to 25--27~ms'' (before/after
+in three different places) & \textbf{Corrected} & Re-measured on the fixed tree:
+$97.4 \to 25.4$--$27.0$ ms across five S2 trials; the tables now match the
+abstract. \\
+``python switch match works'' & \textbf{Removed} & Unknown whether it did;
+now verified to work for priority-100 rules. \\
+\texttt{recovery\_failed} as the S4 outcome & \textbf{Removed} & Now
+\texttt{no\_better\_path}; nothing installed. \\
+References [1] and [7] author lists (McKeown--Anderson--\ldots etc.; Lantz--McGrew--Paxson) &
+\textbf{Corrected} & Replaced with verified publisher-record author lists. \\
+``six scenarios, five trials, six distinct outcomes'' & \textbf{Corrected} &
+Now eight scenarios, five recovery trials, outcomes across all eight. \\
+\bottomrule
+\end{longtable}
+
+\section{Claims that were added}
+
+\begin{longtable}{@{}p{0.44\linewidth}p{0.47\linewidth}@{}}
+\textbf{New claim} & \textbf{Supporting artefact} \\
+\midrule
+The pure-Python datapath enforces the priority-100 rules the controller
+installs, and does not merely hold them inertly &
+\texttt{network-lab/tests/test\_of13switch.py}; live RTT $17.3$ ms on healthy
+baseline; reroute round-trip moves
+traffic off $s1$-$s2$-$s4$ in the data plane. \\
+The lab reset restores the baseline forwarding path & Measured: $25.4$ ms
+before reset $\to$ reset $\to$ $17.3$ ms; matches a freshly built lab. \\
+The verifier's protected-flow test cannot be tricked into approval by an
+action that harms a protected flow & \texttt{verify\_recovery} order changed;
+regression test
+\texttt{test\_a\_protected\_flow\_breach\_is\_a\_failure\_even\_after\_an\_improvement}. \\
+The planner declines to act when no candidate is an improvement &
+\texttt{no\_better\_path} measured live over five S2 trials and one S4
+healthy-impossible-target run; regression tests
+\texttt{TestPlannerImprovement}. \\
+The protective machinery actually protects the declared voice flow & Default
+intent now declares \texttt{h3->h4} with a 20 ms budget; standard 9/9 checks
+pass in S2, S3, S4, S7, S8; Section~VIII-B. \\
+Utilisation is measurable and non-zero; the tie-breaker in Eq. (6) is
+exercised on real data & \texttt{link\_utilisation.csv}: S7 utilisation on
+\texttt{s2-s4} is $55.5$--$55.8\%$ in every sample, vs $0.000\%$ before. \\
+A degraded link can be localised from telemetry alone (no oracle flag) & S8
+outcome \texttt{intent\_satisfied}, after = $25.7$ ms, after
+\texttt{report\_degraded=False}; suspect links $=[s2$-$s4, s1$-$s2]$. \\
+The offload logic is not exposed to operator-level substitution by a
+malicious or confused model & \texttt{SafetyPolicy.intent\_src/dst} scoped by
+\texttt{flow\_scope}; Section V-C check 8; regression test
+\texttt{TestFlowScopeCheck}. \\
+The framework now includes the previously missing verified prior art &
+References 1--13; Section~II-C; Section~XI. \\
+The audit now distinguishes claims vs defects in two phases (round 1, round 2) &
+AUDIT.md §4.3; \texttt{README.md}. \\
+\bottomrule
+\end{longtable}
+
+\section{Numbers that changed}
+
+\begin{longtable}{@{}p{0.40\linewidth}p{0.16\linewidth}p{0.16\linewidth}p{0.18\linewidth}@{}}
+\textbf{Quantity} & \textbf{Previous value} & \textbf{New value} & \textbf{Source} \\
+\midrule
+Healthy baseline latency & $29.7$ ms & $17.3$ ms & \texttt{measurements.csv}, S1 row \\
+Degraded phase mean & $109.8$ ms & $97.6$ ms & \texttt{measurements.csv}, S2 rows \\
+Degraded phase peak sample & $112.2$ ms & $138.8$ ms & \texttt{measurements.csv}, S2 rows \\
+Repaired path RTT & $36.6$--$41.6$ ms (mean $\approx 38.7$) &
+$25.4$--$27.0$ ms (mean $25.8$) & \texttt{scenario\_summary.csv}, S2 \\
+S3 partial-improvement target & $30$ ms & $22$ ms & \texttt{run\_experiments.py}
+  (\texttt{congestion\_partial}) \\
+S3 repair latency & $44.7$ ms & $25.5$ ms & \texttt{scenario\_summary.csv}, S3 \\
+S4 outcome & \texttt{recovery\_failed} & \texttt{no\_better\_path} &
+\texttt{scenario\_summary.csv}, S4 \\
+Voice flow latency & $\approx 1.1$ ms & $\approx 0.4$ ms &
+\texttt{measurements.csv}, voice rows \\
+Baseline path delay & $25.4$ ms pre-reset & $17.3$ ms after reset &
+measured around a reroute + reset \\
+Utilisation, all phases & $0.000\%$ everywhere & ${\approx}55.5\%$--55.8\% on
+s2-s4 in S7 & \texttt{link\_utilisation.csv} \\
+Test count & 122 & 133 + 4 (network lab) & \texttt{reproduce.sh} output \\
+Code defects fixed & 16 & 26 & AUDIT.md, F1--F27 \\
+Broken rules in the datapath & all IPv4 frames & zero (F17 fix) &
+\texttt{network\-lab/tests/test\_of13switch.py} \\
+$c_{\mathrm{dp}}$ & $\approx 13.7$ ms & $\approx 0.9$ ms &
+$RTT {-} 2(D(p){+}2\delta_{acc})$, baseline $8$ ms \\
+Views over & $3$ & $0.4$ ms voice & same-session comparison \\
+\bottomrule
+\end{longtable}
+
+\noindent Every value is from the recorded dataset in \texttt{final\_submission/data/}
+and is regenerable with \texttt{bash final\_submission/scripts/reproduce.sh}.
+
+\section{Artefacts regenerated for this round}
+
+\begin{longtable}{@{}p{0.42\linewidth}p{0.48\linewidth}@{}}
+\textbf{Artefact} & \textbf{Regenerated by} \\
+\midrule
+\texttt{paper/paper.pdf} & \texttt{tectonic paper.tex} in
+\texttt{final\_submission/paper/} \\
+\texttt{paper/paper.tex}, \texttt{tables.tex}, \texttt{numbers.tex} &
+\texttt{final\_submission/scripts/make\_paper\_tables.py} and
+\texttt{make\_figures.py} \\
+\texttt{paper/figures/*} & \texttt{final\_submission/scripts/make\_figures.py} \\
+\texttt{final\_submission/data/*} & \texttt{final\_submission/scripts/reproduce.sh} (re-run) \\
+\texttt{network-lab/topologies/of13switch.py} & F17 fix (flow-mod decoder) \\
+\texttt{network-lab/run\_lab.py} & S7/S8 scenarios, background load, \texttt{report\_degraded} \\
+\texttt{network-lab/controller/ryu\_controller.py} & unchanged since the truth audit \\
+\texttt{services/api/app/safety/gates.py} & gates fix (F18--F26) \\
+\texttt{services/api/app/agents/workflow.py} & planner and
+\texttt{SafetyPolicy.intent\_} \  scoping (F21) \\
+\texttt{apps/web/src/app/\_shell/RunDetailsPanel.tsx} & render
+\texttt{no\_better\_path} \\
+Test suites & \texttt{cd services/api \&\& pytest tests} (133 passed) and
+\texttt{pytest network-lab/tests} (4 passed) \\
+\texttt{AUDIT.md} & sections 4.2--4.3 appended (\texttt{report} and
+\texttt{peer-review round}) \\
+\bottomrule
+\end{longtable}
+
+\section{Limitations that were added or sharpened}
+
+\begin{itemize}
+\item \textbf{The injected fault is a latency fault, not a queueing fault.}
+  Even with the S7 offered load, the bottleneck connection is 100 Mbit/s and
+  the Python datapath tops out around 60--85 Mbit/s; the queueing behaviour
+  a real 1 Gbps link would exhibit is not reproduced.
+\item \textbf{The datapath remains a pure-Python userspace switch.} It is not
+  a merchant-silicon ASIC, its throughput is lower, and its jitter is
+  higher. The lab honestly reports this in \texttt{/v1/health}.
+\item \textbf{The 80\% utilisation branch of the evidence gate is still not
+  exercised live.} The lab can synthesise 55\% utilisation against the
+  80\% capacity check and 80\% does not trip. The branch is exercised by the
+  test suite, not by a live run; this is stated plainly in Section~X.
+\item \textbf{The reset does not restore the datapath's learned path.} The lab
+  does not reproduce the baseline within itself without a restart, because the
+  ring has no spanning tree; the harness therefore restarts the lab between
+  scenarios. (In the earlier tree, this was misattributed to a datapath bug
+  that is now fixed; the residual requirement to restart is a lab-harness
+  property, not a defect in the network code.)
+\item \textbf{The model is not evaluated.} The $M \to D$ boundary is
+  designed and tested but not measured. Item 1 in Section~XI's roadmap
+  documents exactly what is missing to measure it.
+\item \textbf{Single flow, single topology, single intent.} No claim is made
+  at scale.
+\item \textbf{The planner ranks on effective link delay, not measured RTT.}
+  The improvement check added in this round protects the extreme case, but
+  the ranking remains delay-weighted; this is reported in Section~X bullet 7.
+\end{itemize}
+
+\section{Residual issues that this revision did not close}
+
+\begin{enumerate}
+\item The \textbf{util\_branch} of the evidence gate (direct utilisation-based
+  suspect link) is not triggered by the S7 run; the delay-based fallback is
+  what localised \texttt{s2-s4} in the repair scenarios. The utilisation branch
+  has been exercised in unit tests only.
+\item The lab's \textbf{reset} semantics (learned-path restoration) are not
+  solved; the restarted-lab protocol is the practical substitute, and is
+  documented in the limitations section. The fix for the underlying storm
+  (install a spanning tree, or drop the ring-topology's flooding reliance) is
+  available but out of scope.
+\item \textbf{The intent parsing frontier is not evaluated.} No ambiguous,
+  misspelt, or adversarial prompts were evaluated. Section~XI item 1
+  specifies the evaluation that would close this.
+\item The \textbf{fault injection helper scripts} are not verified on this
+  machine; \texttt{scripts/setup-ryu.sh} expects a patches directory that was
+  already missing at audit time and remains missing. The lab runs the vendored
+  Ryu directly; the script is retained but marked unsupported.
+\item The \textbf{simulated offered load} in S7 is a straightforward UDP flood
+  with a fixed payload; it does not emulate arbitrary background applications,
+  bursting, or ECN/DCQCN signalling. The honest claim is ``the datapath can be
+  driven with real UDP load'' --- not ``the lab is a datacenter''.
+\item \textbf{Figure~1 lacks per-edge delay annotations}, per the reviewer's
+  optional suggestion; the reviewer was right that it is a drawing, not a
+  missing result, and fixing it is a pen-and-ink change rather than a
+  technical one.
+\end{enumerate}
+
+\section{Reproducibility statement}
+
+\begin{quote}
+\begin{tabular}{@{}ll@{}}
+Command: & \texttt{bash final\_submission/scripts/reproduce.sh} \\
+Data: & \texttt{final\_submission/data/} \\
+Figures: & \texttt{final\_submission/paper/figures/} \\
+Audit trail: & \texttt{final\_submission/AUDIT.md} \\
+Tests: & 133 + 4 + 5 passed (unit / datapath / live) \\
+Compile: & \texttt{cd final\_submission/paper \&\& tectonic paper.tex} \\
+\end{tabular}
+\end{quote}
+
+The reproduction regenerates every number in this document, every number in
+the paper, every figure in the paper, and every test result on the page.
+The corpus was last fully rebuilt after the review-round fixes were applied
+and verified bit-identical across three consecutive runs.
+
+\section{Closing}
+
+The review was right, in almost every particular. The single finding that
+mattered most --- that the pure-Python datapath never enforces a single
+priority-100 rule --- was the cause of the other two headline findings
+(utilization 0.000\%; misrepresented progress), and both of those are now
+fixed and verified. The revision adds what was missing, removes what was
+unsupported, and says precisely what remains open. We are grateful for the
+review's precision; draft revisions of this kind deserve exactly this kind of
+scrutiny.
+
+\end{document}

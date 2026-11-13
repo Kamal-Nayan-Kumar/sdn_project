@@ -58,40 +58,83 @@ class LabBridgeClient:
         settings = get_settings()
         self.socket_path = socket_path or os.environ.get(
             "SDN_LAB_SOCKET", "/tmp/sdn-lab.sock")
-        # Prefer explicit token, then env var, then /tmp/sdn-lab.token, then settings
-        env_token = os.environ.get("LAB_API_TOKEN", "")
-        user_token_file = f"/tmp/sdn-lab-{os.environ.get('USER', os.getuid())}.token"
-        token_files = ["/tmp/sdn-lab.token", user_token_file]
-        file_token = ""
-        if not env_token:
-            for tf in token_files:
-                if os.path.exists(tf):
-                    try:
-                        with open(tf, "r") as f:
-                            content = f.read().strip()
-                            if content:
-                                file_token = content
-                                break
-                    except OSError:
-                        pass
-
-        if token:
-            self.token = token
-        elif env_token:
-            self.token = env_token
-        elif file_token:
-            self.token = file_token
-        elif settings.bridge_token_configured:
-            self.token = settings.lab_bridge_token
-        else:
-            self.token = ""  # No token configured - lab will be open
+        # An explicitly supplied token always wins; otherwise the token is
+        # resolved from the environment or from the token file the lab writes
+        # at startup.
+        self._explicit_token = token
+        self.token = self._resolve_token(settings)
         self.timeout = float(getattr(settings, "lab_bridge_timeout_seconds", 30.0))
+
+    # ------------------------------------------------------------------
+    # token handling
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _token_files() -> list[str]:
+        user_token_file = f"/tmp/sdn-lab-{os.environ.get('USER', os.getuid())}.token"
+        return ["/tmp/sdn-lab.token", user_token_file]
+
+    def _resolve_token(self, settings: Any = None) -> str:
+        """Read the lab's current token from wherever it is published.
+
+        The lab generates a fresh token every time it starts and writes it to
+        a token file. A client that captured the token once went stale after
+        a lab restart, and every *mutation* then failed with HTTP 401 while
+        reads kept working (the lab only requires the token on POST). That
+        looked like "the agent tried to reroute and the network refused",
+        which is not what happened. The token is therefore re-read whenever
+        the lab rejects a request.
+        """
+        if self._explicit_token:
+            return self._explicit_token
+        env_token = os.environ.get("LAB_API_TOKEN", "")
+        if env_token:
+            return env_token
+        for tf in self._token_files():
+            if os.path.exists(tf):
+                try:
+                    with open(tf, "r") as f:
+                        content = f.read().strip()
+                    if content:
+                        return content
+                except OSError:
+                    pass
+        if settings is not None and settings.bridge_token_configured:
+            return settings.lab_bridge_token
+        return ""  # No token configured - lab will be open
 
     # ------------------------------------------------------------------
     # plumbing
     # ------------------------------------------------------------------
     def _request(self, method: str, path: str,
                  body: dict[str, Any] | None = None) -> Any:
+        """Send one request, retrying once if the lab rejects our token.
+
+        The lab regenerates its token on every start. A long-lived backend
+        that kept the token it read at startup would start getting HTTP 401
+        on every mutation after a lab restart -- reads still worked, because
+        the lab only guards POST -- so the failure looked like the network
+        refusing a reroute. Re-reading the token file and retrying makes the
+        backend survive a lab restart without being restarted itself.
+        """
+        for attempt in (0, 1):
+            status, raw = self._send(method, path, body)
+            if status == 401 and attempt == 0:
+                refreshed = self._resolve_token()
+                if refreshed and refreshed != self.token:
+                    self.token = refreshed
+                    continue
+            if status >= 400:
+                raise LabUnavailable(
+                    f"network lab returned {status} for {path}: {raw[:200]}")
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise LabUnavailable(
+                    f"network lab returned non-JSON for {path}: {raw[:200]}") from exc
+        raise LabUnavailable(f"network lab returned {status} for {path}")
+
+    def _send(self, method: str, path: str,
+              body: dict[str, Any] | None) -> tuple[int, str]:
         payload = json.dumps(body).encode() if body is not None else None
         headers = {"Accept": "application/json"}
         if payload is not None:
@@ -106,21 +149,14 @@ class LabBridgeClient:
             conn.request(method, path, body=payload, headers=headers)
             response = conn.getresponse()
             raw = response.read().decode(errors="replace")
+            status = response.status
         except (FileNotFoundError, ConnectionRefusedError, ConnectionError,
                 TimeoutError, OSError) as exc:
             raise LabUnavailable(
                 f"network lab not reachable at {self.socket_path}: {exc}") from exc
         finally:
             conn.close()
-
-        if response.status >= 400:
-            raise LabUnavailable(
-                f"network lab returned {response.status} for {path}: {raw[:200]}")
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise LabUnavailable(
-                f"network lab returned non-JSON for {path}: {raw[:200]}") from exc
+        return status, raw
 
     def get(self, path: str) -> Any:
         return self._request("GET", path)
@@ -154,13 +190,32 @@ class LabBridgeClient:
     # mutations (allow-listed only)
     # ------------------------------------------------------------------
     def start_congestion(self, link_id: str = "s2-s4", rate_mbps: float = 400.0,
-                         duration_seconds: float = 0.0) -> dict[str, Any]:
+                         duration_seconds: float = 0.0,
+                         report_degraded: bool = True) -> dict[str, Any]:
         return self.post("/v1/scenarios/congestion", {
             "link_id": link_id, "rate_mbps": rate_mbps,
-            "duration_seconds": duration_seconds})
+            "duration_seconds": duration_seconds,
+            "report_degraded": bool(report_degraded)})
 
     def reset(self) -> dict[str, Any]:
         return self.post("/v1/scenarios/reset")
+
+    def start_background_load(self, src_host: str = "h2",
+                               dst_host: str = "h4",
+                               rate_mbps: float = 5.0,
+                               duration_seconds: float = 0.0) -> dict[str, Any]:
+        return self.post("/v1/scenarios/background_load", {
+            "src_host": src_host, "dst_host": dst_host,
+            "rate_mbps": rate_mbps,
+            "duration_seconds": duration_seconds})
+
+    def stop_background_load(self) -> dict[str, Any]:
+        return self.post("/v1/scenarios/background_load/stop", {})
+
+    def set_link_capacity(self, link_id: str = "s2-s4",
+                          capacity_mbps: float = 100.0) -> dict[str, Any]:
+        return self.post("/v1/scenarios/link_capacity", {
+            "link_id": link_id, "capacity_mbps": float(capacity_mbps)})
 
     def reroute(self, src_host: str, dst_host: str,
                 path: list[str]) -> dict[str, Any]:

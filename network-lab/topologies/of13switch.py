@@ -428,7 +428,13 @@ def _parse_flow_mod(body: bytes) -> Any:
     # Decode with Ryu's own OFPMatch parser so a stored match keeps the
     # `to_jsondict()` shape the flow matcher and delete logic expect.
     match = ofp_parser.OFPMatch.parser(body, offset)
-    offset += match_len
+    # An OXM match is padded with NUL bytes so that the whole match is a
+    # multiple of 8 bytes long; `match_len` counts only the fields. Forgetting
+    # those pad bytes meant the instruction decoder started in the middle of
+    # the padding and saw a zeroed word as instruction type 0/0, so no flow
+    # installed by the controller ever had an action -- every frame fell
+    # through to the controller as PACKET_IN.
+    offset += ((match_len + 7) // 8) * 8
 
     return _SimpleNamespace(
         cookie=cookie, cookie_mask=cookie_mask, table_id=table_id,

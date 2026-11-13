@@ -1,0 +1,43 @@
+ablation,policy,scenario,chosen_path,chosen_links,crosses_congested_link,configured_delay_ms,max_utilization_pct,measured_latency_ms,detail
+ranking_policy,system_congestion_aware,congestion_recovery,h1-s1-s3-s4-h4,s1-s3;s3-s4,False,12.0,0.0,25.283,selects a path that avoids the congested link
+ranking_policy,ablation_shortest_path_only,congestion_recovery,h1-s1-s2-s4-h4,s1-s2;s2-s4,True,48.0,0.004,97.222,selects a path that still crosses the congested link
+violation_rule,system_sample_distribution,congestion_recovery:congestion_recovery,,,,,,,"target 98 ms: distribution rule says violated=False, mean-only rule says violated=True (mean 102.9 ms, 1/10 samples over target)"
+violation_rule,ablation_mean_only,congestion_recovery:congestion_recovery,,,,,,,target 98 ms: mean-only rule says violated=True (mean 102.9 ms)
+violation_rule,system_sample_distribution,congestion_recovery:congestion_recovery,,,,,,,"target 99 ms: distribution rule says violated=False, mean-only rule says violated=True (mean 102.9 ms, 1/10 samples over target)"
+violation_rule,ablation_mean_only,congestion_recovery:congestion_recovery,,,,,,,target 99 ms: mean-only rule says violated=True (mean 102.9 ms)
+violation_rule,system_sample_distribution,congestion_recovery:congestion_recovery,,,,,,,"target 100 ms: distribution rule says violated=False, mean-only rule says violated=True (mean 102.9 ms, 1/10 samples over target)"
+violation_rule,ablation_mean_only,congestion_recovery:congestion_recovery,,,,,,,target 100 ms: mean-only rule says violated=True (mean 102.9 ms)
+violation_rule,system_sample_distribution,congestion_recovery:congestion_recovery,,,,,,,"target 101 ms: distribution rule says violated=False, mean-only rule says violated=True (mean 102.9 ms, 1/10 samples over target)"
+violation_rule,ablation_mean_only,congestion_recovery:congestion_recovery,,,,,,,target 101 ms: mean-only rule says violated=True (mean 102.9 ms)
+violation_rule,system_sample_distribution,congestion_recovery:congestion_recovery,,,,,,,"target 102 ms: distribution rule says violated=False, mean-only rule says violated=True (mean 102.9 ms, 1/10 samples over target)"
+violation_rule,ablation_mean_only,congestion_recovery:congestion_recovery,,,,,,,target 102 ms: mean-only rule says violated=True (mean 102.9 ms)
+violation_rule,system_sample_distribution,congestion_recovery:congestion_recovery,,,,,,,"target 98 ms: distribution rule says violated=False, mean-only rule says violated=True (mean 100.9 ms, 2/10 samples over target)"
+violation_rule,ablation_mean_only,congestion_recovery:congestion_recovery,,,,,,,target 98 ms: mean-only rule says violated=True (mean 100.9 ms)
+violation_rule,system_sample_distribution,congestion_recovery:congestion_recovery,,,,,,,"target 99 ms: distribution rule says violated=False, mean-only rule says violated=True (mean 100.9 ms, 2/10 samples over target)"
+violation_rule,ablation_mean_only,congestion_recovery:congestion_recovery,,,,,,,target 99 ms: mean-only rule says violated=True (mean 100.9 ms)
+violation_rule,system_sample_distribution,congestion_recovery:congestion_recovery,,,,,,,"target 100 ms: distribution rule says violated=False, mean-only rule says violated=True (mean 100.9 ms, 2/10 samples over target)"
+violation_rule,ablation_mean_only,congestion_recovery:congestion_recovery,,,,,,,target 100 ms: mean-only rule says violated=True (mean 100.9 ms)
+violation_rule,system_sample_distribution,offered_load_congestion:offered_load_congestion,,,,,,,"target 98 ms: distribution rule says violated=True, mean-only rule says violated=False (mean 97.9 ms, 4/10 samples over target)"
+violation_rule,ablation_mean_only,offered_load_congestion:offered_load_congestion,,,,,,,target 98 ms: mean-only rule says violated=False (mean 97.9 ms)
+violation_rule,system_sample_distribution,offered_load_congestion:offered_load_congestion,,,,,,,"target 104 ms: distribution rule says violated=False, mean-only rule says violated=True (mean 104.5 ms, 2/10 samples over target)"
+violation_rule,ablation_mean_only,offered_load_congestion:offered_load_congestion,,,,,,,target 104 ms: mean-only rule says violated=True (mean 104.5 ms)
+violation_rule,system_sample_distribution,offered_load_congestion:offered_load_congestion,,,,,,,"target 99 ms: distribution rule says violated=True, mean-only rule says violated=False (mean 98.5 ms, 3/10 samples over target)"
+violation_rule,ablation_mean_only,offered_load_congestion:offered_load_congestion,,,,,,,target 99 ms: mean-only rule says violated=False (mean 98.5 ms)
+violation_rule,system_sample_distribution,offered_load_congestion:offered_load_congestion,,,,,,,"target 99 ms: distribution rule says violated=True, mean-only rule says violated=False (mean 98.7 ms, 4/10 samples over target)"
+violation_rule,ablation_mean_only,offered_load_congestion:offered_load_congestion,,,,,,,target 99 ms: mean-only rule says violated=False (mean 98.7 ms)
+violation_rule,system_sample_distribution,offered_load_congestion:offered_load_congestion,,,,,,,"target 98 ms: distribution rule says violated=False, mean-only rule says violated=True (mean 98.1 ms, 1/10 samples over target)"
+violation_rule,ablation_mean_only,offered_load_congestion:offered_load_congestion,,,,,,,target 98 ms: mean-only rule says violated=True (mean 98.1 ms)
+violation_rule,system_sample_distribution,offered_load_congestion:offered_load_congestion,,,,,,,"target 199 ms: distribution rule says violated=True, mean-only rule says violated=False (mean 198.6 ms, 3/8 samples over target)"
+violation_rule,ablation_mean_only,offered_load_congestion:offered_load_congestion,,,,,,,target 199 ms: mean-only rule says violated=False (mean 198.6 ms)
+violation_rule,system_sample_distribution,offered_load_congestion:offered_load_congestion,,,,,,,"target 186 ms: distribution rule says violated=True, mean-only rule says violated=False (mean 185.6 ms, 5/9 samples over target)"
+violation_rule,ablation_mean_only,offered_load_congestion:offered_load_congestion,,,,,,,target 186 ms: mean-only rule says violated=False (mean 185.6 ms)
+violation_rule,system_sample_distribution,offered_load_congestion:offered_load_congestion,,,,,,,"target 187 ms: distribution rule says violated=True, mean-only rule says violated=False (mean 185.6 ms, 5/9 samples over target)"
+violation_rule,ablation_mean_only,offered_load_congestion:offered_load_congestion,,,,,,,target 187 ms: mean-only rule says violated=False (mean 185.6 ms)
+violation_rule,system_sample_distribution,offered_load_congestion:offered_load_congestion,,,,,,,"target 188 ms: distribution rule says violated=True, mean-only rule says violated=False (mean 185.6 ms, 5/9 samples over target)"
+violation_rule,ablation_mean_only,offered_load_congestion:offered_load_congestion,,,,,,,target 188 ms: mean-only rule says violated=False (mean 185.6 ms)
+violation_rule,system_sample_distribution,offered_load_congestion:offered_load_congestion,,,,,,,"target 189 ms: distribution rule says violated=True, mean-only rule says violated=False (mean 185.6 ms, 5/9 samples over target)"
+violation_rule,ablation_mean_only,offered_load_congestion:offered_load_congestion,,,,,,,target 189 ms: mean-only rule says violated=False (mean 185.6 ms)
+violation_rule,system_sample_distribution,offered_load_congestion:offered_load_congestion,,,,,,,"target 99 ms: distribution rule says violated=True, mean-only rule says violated=False (mean 98.9 ms, 5/10 samples over target)"
+violation_rule,ablation_mean_only,offered_load_congestion:offered_load_congestion,,,,,,,target 99 ms: mean-only rule says violated=False (mean 98.9 ms)
+always_act_vs_abstain,system (declines to act),healthy_impossible_target,,,,,,17.18,"outcome=no_better_path, executed=None, flow_rules_installed=None, healthy flow left at 17.2 ms on its current path"
+always_act_vs_abstain,ablation (always acts),healthy_impossible_target,s1-s3-s4,,,,,26.013,"would install s1-s3-s4, whose measured latency in the recovery scenario was 26.0 ms against the 17.2 ms healthy baseline (+51%)"
