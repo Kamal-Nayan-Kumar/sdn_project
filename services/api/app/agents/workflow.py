@@ -26,9 +26,11 @@ from typing import Any, Literal
 from app.agents import state as st
 from app.core.config import get_settings
 from app.safety.gates import (
+    VIOLATION_SAMPLE_FRACTION,
     SafetyPolicy,
     assess_evidence,
     check_protected_flows,
+    latency_violation,
     validate_reroute,
     verify_recovery,
 )
@@ -39,6 +41,7 @@ from app.schemas.domain import (
     FlowTelemetry,
     IntentSpec,
     NetworkSnapshot,
+    ProtectedFlowSpec,
     RiskLevel,
     RerouteAction,
     VerificationStatus,
@@ -117,6 +120,8 @@ def _policy_for(intent: IntentSpec | None,
     return SafetyPolicy(
         protected_flows=list(intent.protected_flows) if intent else [],
         protected_links=sorted(set(protected_links)),
+        intent_src=intent.src_host if intent else None,
+        intent_dst=intent.dst_host if intent else None,
     )
 
 
@@ -164,7 +169,7 @@ def intent_detection(state: st.AgentState) -> st.AgentState:
                 max_latency_ms=float(parsed.get("max_latency_ms")
                                      or intent.max_latency_ms),
             )
-            notes.append("intent parsed by " + settings.groq_model)
+            notes.append("intent parsed by " + settings.llm_model_name)
         except LLMUnavailable as exc:
             llm_error = str(exc)
             intent = parse_intent_deterministically(message, intent)
@@ -177,7 +182,7 @@ def intent_detection(state: st.AgentState) -> st.AgentState:
                          "deterministic intent parsing")
     else:
         intent = parse_intent_deterministically(message, intent)
-        notes.append("GROQ_API_KEY not configured; used deterministic intent "
+        notes.append("no LLM key configured; used deterministic intent "
                      "parsing")
 
     needs_clarification = not _message_is_actionable(message)
@@ -209,14 +214,29 @@ def intent_detection(state: st.AgentState) -> st.AgentState:
 
 
 def _default_intent() -> IntentSpec:
-    """The canonical project intent, used as a documented starting point."""
+    """The canonical project intent, used as a documented starting point.
+
+    The protected voice flow $h3 \to h4$ is declared here rather than left
+    implicit: a flow that nobody declares is a flow nobody protects, and the
+    protected-flow machinery in the safety gate and in the verification gate
+    would never be exercised by a real run.
+    """
     return IntentSpec(
         name="video latency intent",
         traffic_class=FlowKind.VIDEO,
         src_host="h1",
         dst_host="h4",
         max_latency_ms=50.0,
-        protected_flows=[],
+        protected_flows=[
+            ProtectedFlowSpec(
+                flow_id="h3->h4",
+                label="voice",
+                src_host="h3",
+                dst_host="h4",
+                max_latency_ms=20.0,
+                max_packet_loss_pct=1.0,
+            ),
+        ],
     )
 
 
@@ -392,11 +412,28 @@ def assess_evidence_node(state: st.AgentState) -> st.AgentState:
             reason=assessment.summary,
         )
 
+    baseline = state.get("baseline")
+    latency_violated = _is_violated(baseline, intent)
+    # The loss half of the intent. Eq. (4) of the paper is a latency predicate
+    # on purpose, but a flow whose packet loss is above its declared loss
+    # target has not met the intent either -- and if Gate 1 called that a
+    # satisfied intent, the two gates would disagree about the same
+    # measurement, which is exactly what the shared predicate exists to
+    # prevent. With no loss target declared (the evaluated intent declares
+    # none) this is false by construction, so the behaviour is unchanged.
+    loss_target = getattr(intent, "max_packet_loss_pct", None)
+    loss_violated = False
+    if loss_target is not None and baseline is not None:
+        loss = getattr(baseline, "packet_loss_pct", None)
+        if loss is not None and loss > float(loss_target):
+            loss_violated = True
+
     return {
         **state,
         "evidence": assessment,
         "evidence_status": assessment.status,
-        "intent_violated": _is_violated(state.get("baseline"), intent),
+        "intent_violated": latency_violated,
+        "intent_loss_violated": loss_violated,
         "planning_notes": notes,
     }
 
@@ -406,7 +443,9 @@ def assess_evidence_node(state: st.AgentState) -> st.AgentState:
 # ping, so a single slow packet from scheduler noise is not a violation -- but a
 # majority, or any sustained run, is. Expressed as a fraction so it does not
 # depend on the sample count the lab happens to use.
-VIOLATION_SAMPLE_FRACTION = 0.25
+#
+# The constant is defined in `safety.gates` and imported above, so that the
+# evidence gate and the verification gate cannot drift apart.
 
 
 def _is_violated(flow: FlowTelemetry | None,
@@ -422,27 +461,16 @@ def _is_violated(flow: FlowTelemetry | None,
     40-56 ms against a 50 ms target saw a mean of 41.8 ms, concluded
     `intent_satisfied`, and proposed nothing -- while the dashboard showed the
     same flow breaching. The mean hides exactly the behaviour a latency SLO is
-    meant to catch. `max_latency_ms` from the measurement is preferred when
-    present, since the lab computes it from the same samples.
+    meant to catch.
+
+    The rule itself lives in `safety.gates.latency_violation`, so that the
+    evidence gate and the verification gate cannot drift apart.
     """
     if flow is None or flow.latency_ms is None or flow.latency_ms < 0:
         return None
     if flow.packet_loss_pct and flow.packet_loss_pct > 0:
         return True
-
-    target = intent.max_latency_ms
-    samples = [s for s in (getattr(flow, "samples", None) or [])
-               if isinstance(s, (int, float)) and s >= 0]
-    if len(samples) >= 2:
-        over = sum(1 for s in samples if s > target)
-        if over / len(samples) >= VIOLATION_SAMPLE_FRACTION:
-            return True
-        return False
-
-    peak = getattr(flow, "max_latency_ms", None)
-    if isinstance(peak, (int, float)) and peak > target:
-        return True
-    return flow.latency_ms > target
+    return latency_violation(flow, intent.max_latency_ms)
 
 
 # ---------------------------------------------------------------------------
@@ -460,8 +488,15 @@ def diagnose_and_plan(state: st.AgentState,
     if not suspects and snapshot is not None:
         from app.safety.gates import _infer_bottleneck_links
 
+        # The flow's current path is needed for the path-delay fallback: when
+        # nothing is congested on byte counters, the only place the excess
+        # latency can be accruing is a link on the path the flow is already
+        # taking. Without it the diagnosis reports "no bottleneck identified"
+        # even though the agent is about to reroute around one.
+        current_path = list((state.get("baseline") and state["baseline"].path) or [])
         suspects = _infer_bottleneck_links(
-            snapshot, get_settings().congestion_utilization_threshold)
+            snapshot, get_settings().congestion_utilization_threshold,
+            path=current_path or None)
 
     # Candidate paths straight from the lab's own graph enumeration.
     paths_result = run_tool("evaluate_paths", {
@@ -551,7 +586,7 @@ def diagnose_and_plan(state: st.AgentState,
         emit_state(state, EventType.THINKING, step="diagnose", text=summary)
 
     emit_state(state, EventType.DIAGNOSIS_SUMMARY, step="diagnose",
-               summary=summary, model=settings.groq_model if model_used else None,
+               summary=summary, model=settings.llm_model_name if model_used else None,
                suspect_links=suspects,
                candidates=["-".join(c.path) for c in candidates])
 
@@ -563,6 +598,31 @@ def diagnose_and_plan(state: st.AgentState,
         "diagnosis_summary": summary,
         "planning_notes": notes,
     }
+
+
+def _path_delay(snapshot: NetworkSnapshot | None, path: list[str]) -> float:
+    """The accumulated effective delay of a switch path.
+
+    Only the inter-switch edges count: the host access edges are a fixed
+    $0.1$~ms each and would not change the comparison between two paths.
+    """
+    if snapshot is None or not path:
+        return 0.0
+    delays = {link.link_id: float(link.latency_ms or 0.0)
+              for link in snapshot.links}
+    total = 0.0
+    for a, b in zip(path, path[1:]):
+        if a.startswith("h") or b.startswith("h"):
+            # Host access edges are not switch edges: they are a fixed
+            # 0.1 ms each and would not change the comparison.
+            continue
+        total += float(delays.get("-".join(sorted((a, b))), 0.0))
+    return total
+
+
+def _switch_nodes(path: list[str]) -> list[str]:
+    """The switch subsequence of a path, e.g. [h1,s1,s3,s4,h4] -> [s1,s3,s4]."""
+    return [n for n in path if not n.startswith("h")]
 
 
 def _checks(result: Any) -> list[dict[str, Any]]:
@@ -628,7 +688,30 @@ def select_and_validate(state: st.AgentState) -> st.AgentState:
     settings = get_settings()
     run_id = state.get("run_id", "")
 
+    # A reroute is only worth making if the path it installs carries less
+    # delay than the path the flow is on now. Without this comparison the
+    # planner would drop the active path and install an alternative that is
+    # strictly worse -- degrading a healthy network to satisfy an intent the
+    # topology cannot meet, and leaving the verification gate to report the
+    # regression it had caused.
+    baseline = state.get("baseline")
+    current_path = list(getattr(baseline, "path", None) or [])
+    current_delay = _path_delay(snapshot, current_path)
+    no_better = 0
+
     for index, action in enumerate(candidates):
+        candidate_delay = _path_delay(snapshot, _switch_nodes(action.path))
+        if candidate_delay >= current_delay:
+            no_better += 1
+            rejected.append({
+                "action": action.model_dump(),
+                "rejection_reason": (
+                    f"the candidate carries {candidate_delay:.1f} ms of link "
+                    f"delay, which is not less than the {current_delay:.1f} ms "
+                    f"the flow is on now"),
+                "failed_checks": ["not_an_improvement"],
+            })
+            continue
         result = validate_reroute(
             action,
             snapshot=snapshot,
@@ -666,32 +749,52 @@ def select_and_validate(state: st.AgentState) -> st.AgentState:
             "failed_checks": [c.name for c in result.failed_checks],
         })
 
-    # Nothing passed. This is the *correct* outcome for an unsafe topology,
-    # and it is reported rather than worked around.
+    # Nothing passed. There are two quite different reasons for that, and
+    # they are reported differently: no candidate was *safe*, or no candidate
+    # was *worth doing*. The second is the system's ability to decline to
+    # act, which is the point of the whole design.
     reason = rejected[-1]["rejection_reason"] if rejected else "unknown"
     notes = list(state.get("planning_notes", []))
-    notes.append(
-        f"All {len(candidates)} candidate paths were rejected by the "
-        "deterministic safety validator.")
+    only_no_better = bool(rejected) and no_better == len(rejected)
+    if only_no_better:
+        notes.append(
+            f"All {len(candidates)} candidate paths carry at least as much "
+            f"link delay as the path the flow is already on "
+            f"({current_delay:.1f} ms); none was adopted.")
+        outcome = "no_better_path"
+        explanation = (
+            "No alternative path carries less link delay than the one the "
+            f"flow is on now ({current_delay:.1f} ms), so the agent declined "
+            "to change the network: the current path is already the best "
+            "available, and rerouting would only make the intent harder to "
+            "meet.")
+        status = "no_better_path"
+    else:
+        notes.append(
+            f"All {len(candidates)} candidate paths were rejected by the "
+            "deterministic safety validator.")
+        outcome = "action_rejected"
+        explanation = ("Every candidate reroute failed deterministic safety "
+                        f"validation, so no network change was made. "
+                        f"Last rejection: {reason}")
+        status = "rejected"
     emit_state(
         state, EventType.VALIDATION_COMPLETED, step="validate",
-        status="rejected", approved=False, checks=[],
+        status=status, approved=False, checks=[],
         checks_passed=0, risk_level=None, requires_approval=False,
         rejection_reason=reason, rejected_actions=rejected)
     emit_state(
         state, EventType.GUARDRAIL, step="validate",
         stage="validation", decision="block", rule="reroute_validator",
-        reason=f"No candidate passed the safety validator. {reason}")
+        reason=f"No candidate was adopted. {reason}")
     return {
         **state,
         "selected_action": None,
         "validation": None,
         "rejected_actions": rejected,
         "planning_notes": notes,
-        "final_outcome": "action_rejected",
-        "explanation": ("Every candidate reroute failed deterministic safety "
-                        f"validation, so no network change was made. "
-                        f"Last rejection: {reason}"),
+        "final_outcome": outcome,
+        "explanation": explanation,
     }
 
 
@@ -826,6 +929,22 @@ def verify_and_explain(state: st.AgentState,
 
     execution = state.get("execution")
     if not isinstance(execution, ExecutionResult) or execution.status != "executed":
+        # The action did not execute. If a previous node already decided *why*
+        # (the lab rejected the mutation, the run was cancelled, an approval
+        # was withheld), that reason is the outcome. Reporting "unverified"
+        # here would overwrite a concrete failure with a vague one and, worse,
+        # claim that post-action telemetry was missing when it was not.
+        preserved = state.get("final_outcome")
+        if preserved in ("lab_offline", "cancelled", "awaiting_approval",
+                         "action_rejected"):
+            return {
+                **state,
+                "verification": None,
+                "verification_status": VerificationStatus.UNVERIFIED,
+                "explanation": state.get("explanation")
+                or "The action did not execute, so there is nothing to "
+                   "verify against the intent.",
+            }
         return {
             **state,
             "verification": None,
@@ -835,13 +954,19 @@ def verify_and_explain(state: st.AgentState,
                             "to verify against the intent."),
         }
 
-    executed_path = list(execution.controller_response.get("path") or [])
     statuses = check_protected_flows(
         protected=intent.protected_flows,
         before=protected_before,
         after=protected_after,
-        path_by_flow={spec.flow_id: executed_path
-                      for spec in intent.protected_flows},
+        # Each protected flow is compared against the path it was on before
+        # the action. Passing the path the action installed would compare a
+        # protected flow against the *action's* path and report every
+        # protected flow as having been moved.
+        path_by_flow={spec.flow_id: list(
+            (next((f.path for f in protected_after
+                   if f.src_host == spec.src_host
+                   and f.dst_host == spec.dst_host), None) or []))
+            for spec in intent.protected_flows},
     )
 
     outcome = verify_recovery(

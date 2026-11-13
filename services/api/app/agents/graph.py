@@ -38,34 +38,63 @@ def _evidence_route(state: st.AgentState) -> str:
     """Gate 1: three outcomes, never conflated.
 
     * `diagnose`   -- the intent is breached *and* the evidence supports acting.
-    * `satisfied`  -- the intent was measured and already met. A confident
-      no-op, reported as such rather than as a failure to act.
-    * `abstain`    -- the measurement is missing, stale or inconclusive. A
-      refusal to act, which must not be reported as success.
+    * `satisfied`  -- the intent was measured and already met on fresh,
+      sane, sufficient evidence. A confident no-op, reported as such rather
+      than as a failure to act. A stale or insane snapshot never routes
+      here, even when its samples satisfy the target.
+    * `abstain`    -- the measurement is missing, stale, insane or
+      inconclusive. A refusal to act, which must not be reported as success.
     """
     violated = state.get("intent_violated")
-    if violated is False:
-        return "satisfied"
-
+    loss_violated = state.get("intent_loss_violated")
     status = state.get("evidence_status")
-    if status is not None and status.value in ("sufficient", "provisional"):
+    sufficient = status is not None and status.value == "sufficient"
+
+    # Freshness and numerical sanity are preconditions for a confident no-op:
+    # a stale or insane snapshot whose samples satisfy the target must not be
+    # reported as "the intent is met". Only fresh, sane, sufficient evidence
+    # may terminate the run as satisfied.
+    if violated is False and not loss_violated:
+        return "satisfied" if sufficient else "abstain"
+
+    if sufficient:
         return "diagnose"
     return "abstain"
 
 
 def _validation_route(state: st.AgentState) -> str:
-    """Gate 2: only an approved action may reach the data plane."""
+    """Gate 2: only an approved action may reach the data plane.
+
+    An action that the validator approved but that sits above the unattended
+    risk threshold is *held* for a human rather than executed. The decision
+    has to be made here, at the routing point: the `execute` node is wired
+    unconditionally to `observe_after`, so a hold taken inside `execute`
+    would fall through to the verification gate and be reported as an
+    unverified recovery instead of as a held action.
+    """
     if state.get("awaiting_approval"):
         return "hold"
     validation = state.get("validation")
-    if validation is not None and validation.approved:
-        return "execute"
-    return "stop"
+    if validation is None or not validation.approved:
+        return "stop"
+    if getattr(validation, "requires_approval", False) and not state.get("approved_by"):
+        return "hold"
+    return "execute"
 
 
 def _terminal(state: st.AgentState) -> st.AgentState:
-    """Closing node: stamp the finish time and leave the outcome untouched."""
-    return {**state, "finished_at": wf.utcnow()}
+    """Closing node: stamp the finish time and leave the outcome untouched.
+
+    One exception: a run that stopped to ask the operator a question has no
+    outcome of its own yet, and the record would otherwise be filed as
+    ``unknown`` -- which reads like a measurement failure rather than the
+    deliberate refusal it is. The clarification branch gets its own terminal
+    outcome so that "I asked" is auditable, exactly like every other exit.
+    """
+    outcome = state.get("final_outcome")
+    if not outcome and state.get("intent_needs_clarification"):
+        outcome = "clarification"
+    return {**state, "final_outcome": outcome, "finished_at": wf.utcnow()}
 
 
 def build_graph(client: LabBridgeClient):
@@ -134,11 +163,26 @@ def _needs_clarification(state: st.AgentState) -> str:
 
 
 def _abstain(state: st.AgentState) -> st.AgentState:
-    """Gate 1 refusal: no evidence, therefore no plan, therefore no change."""
+    """Gate 1 refusal: no evidence, therefore no plan, therefore no change.
+
+    A refusal is not always the whole story: if the observation step already
+    established that the lab was unreachable, that is the real reason, and
+    "insufficient evidence" would hide it behind a vaguer word.
+    """
     evidence = state.get("evidence")
     reason = getattr(evidence, "reason", None) or "insufficient evidence"
     notes = list(state.get("planning_notes", []))
     notes.append(f"Abstained: {reason}")
+
+    if state.get("lab_offline"):
+        return {
+            **state,
+            "planning_notes": notes,
+            "final_outcome": "lab_offline",
+            "explanation": (
+                "The local network lab could not be read, so the network "
+                "state is unknown. No network change was attempted."),
+        }
     return {
         **state,
         "planning_notes": notes,
@@ -168,10 +212,16 @@ def _satisfied(state: st.AgentState) -> st.AgentState:
 
 
 def _hold(state: st.AgentState) -> st.AgentState:
-    """Gate 2 hold: an approved-but-risky action is waiting for a human."""
+    """Gate 2 hold: an approved-but-risky action is waiting for a human.
+
+    The network was not touched, so this is *not* a rejection and *not* a
+    recovery attempt: it gets its own outcome rather than being folded into
+    `action_rejected`, which means "the validator refused this action".
+    """
     return {
         **state,
-        "final_outcome": "action_rejected",
+        "awaiting_approval": True,
+        "final_outcome": "awaiting_approval",
         "explanation": state.get("explanation")
         or "Action is awaiting human approval; nothing was changed.",
     }

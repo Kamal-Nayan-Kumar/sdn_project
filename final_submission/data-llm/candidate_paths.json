@@ -1,0 +1,92 @@
+{
+  "paths": [
+    {
+      "nodes": [
+        "h1",
+        "s1",
+        "s2",
+        "s4",
+        "h4"
+      ],
+      "switches": [
+        "s1",
+        "s2",
+        "s4"
+      ],
+      "links": [
+        "s1-s2",
+        "s2-s4"
+      ],
+      "total_delay_ms": 8.0,
+      "min_capacity_mbps": 100.0
+    },
+    {
+      "nodes": [
+        "h1",
+        "s1",
+        "s3",
+        "s4",
+        "h4"
+      ],
+      "switches": [
+        "s1",
+        "s3",
+        "s4"
+      ],
+      "links": [
+        "s1-s3",
+        "s3-s4"
+      ],
+      "total_delay_ms": 12.0,
+      "min_capacity_mbps": 1000.0
+    },
+    {
+      "nodes": [
+        "h1",
+        "s1",
+        "s3",
+        "s2",
+        "s4",
+        "h4"
+      ],
+      "switches": [
+        "s1",
+        "s3",
+        "s2",
+        "s4"
+      ],
+      "links": [
+        "s1-s3",
+        "s2-s3",
+        "s2-s4"
+      ],
+      "total_delay_ms": 13.0,
+      "min_capacity_mbps": 100.0
+    },
+    {
+      "nodes": [
+        "h1",
+        "s1",
+        "s2",
+        "s3",
+        "s4",
+        "h4"
+      ],
+      "switches": [
+        "s1",
+        "s2",
+        "s3",
+        "s4"
+      ],
+      "links": [
+        "s1-s2",
+        "s2-s3",
+        "s3-s4"
+      ],
+      "total_delay_ms": 15.0,
+      "min_capacity_mbps": 1000.0
+    }
+  ],
+  "src": "h1",
+  "dst": "h4"
+}

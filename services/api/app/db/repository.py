@@ -79,6 +79,66 @@ def save_run_record(record: RunRecord) -> None:
                 )
                 session.add(row)
 
+            validation_obj = final.get("validation")
+            execution_obj = final.get("execution")
+            if execution_obj is not None and getattr(execution_obj, "status", None) == "executed":
+                execution_status = "executed"
+                execution_payload = (execution_obj.model_dump(mode="json")
+                                     if hasattr(execution_obj, "model_dump")
+                                     else dict(execution_obj))
+            elif final.get("final_outcome") == "awaiting_approval":
+                execution_status = "skipped_awaiting_approval"
+                execution_payload = None
+            else:
+                execution_status = "not_executed"
+                execution_payload = None
+
+            # Persist the proposed action, its deterministic validation and
+            # its execution result. The `action_records` table existed but
+            # nothing ever wrote to it, so the audit trail kept the run's
+            # events and its verification but not the action itself.
+            selected = final.get("selected_action")
+            if selected is not None:
+                action_id = str(getattr(selected, "action_id", "") or
+                                final.get("action_id") or record.run_id)
+                existing = session.scalar(
+                    select(ActionRecord).where(ActionRecord.run_id == record.run_id))
+                payload = (selected.model_dump(mode="json")
+                           if hasattr(selected, "model_dump") else dict(selected))
+                risk = getattr(validation_obj, "risk_level", None)
+                checks = []
+                for c in (getattr(validation_obj, "checks", None) or []):
+                    checks.append(c.model_dump(mode="json")
+                                  if hasattr(c, "model_dump") else dict(c))
+                if existing is None:
+                    session.add(ActionRecord(
+                        run_id=record.run_id,
+                        action_id=action_id,
+                        action_type=str(getattr(
+                            getattr(selected, "action_type", None), "value",
+                            getattr(selected, "action_type", "reroute_flow"))),
+                        payload=payload,
+                        risk_level=getattr(risk, "value", risk) or "low",
+                        validation_status=("approved"
+                                           if getattr(validation_obj, "approved", False)
+                                           else "rejected"),
+                        validation_checks=checks,
+                        rejection_reason=getattr(validation_obj, "rejection_reason", None),
+                        execution_status=execution_status,
+                        execution_result=execution_payload,
+                        idempotency_key=action_id,
+                        executed_at=getattr(execution_obj, "executed_at", None),
+                    ))
+                else:
+                    existing.validation_status = (
+                        "approved" if getattr(validation_obj, "approved", False)
+                        else "rejected")
+                    existing.validation_checks = checks
+                    existing.rejection_reason = getattr(
+                        validation_obj, "rejection_reason", None)
+                    existing.execution_status = execution_status
+                    existing.execution_result = execution_payload
+
             # Persist verification result if available
             verification = final.get("verification")
             if verification and not run.verification:

@@ -253,14 +253,24 @@ def _deterministic_answer(state: dict[str, Any]) -> str:
 
     target = f"{intent.max_latency_ms:.0f} ms" if intent else "the target"
     pair = f"{intent.src_host}→{intent.dst_host}" if intent else "the flow"
+    protected = list(intent.protected_flows) if intent else []
+    # Only claim a protected flow stayed put when one was actually declared
+    # *and* actually measured. The default intent declares none, so asserting
+    # "the protected voice flow stayed on its path" would be a statement about
+    # a flow the system never looked at.
+    protected_note = ""
+    if protected:
+        protected_note = (
+            f", and the protected flow {protected[0].flow_id} stayed within "
+            "its constraints")
 
     if outcome == "intent_satisfied" and execution is not None:
         path = (execution.controller_response or {}).get("path") or []
         return (
             f"I rerouted {pair} onto {'-'.join(path) if path else 'an alternate path'} "
             f"and re-measured with fresh telemetry. Latency went from "
-            f"{_ms(before)} to {_ms(after)} against a {target} target, and the "
-            f"protected voice flow stayed on its path. All three gates passed: "
+            f"{_ms(before)} to {_ms(after)} against a {target} target"
+            f"{protected_note}. All three gates passed: "
             f"the evidence was fresh, the reroute was approved by the validator, "
             f"and the improvement is measured, not assumed.")
     if outcome == "partial_improvement":
@@ -281,12 +291,28 @@ def _deterministic_answer(state: dict[str, Any]) -> str:
         return ("No candidate reroute passed the deterministic safety "
                 "validator, so I made no change. The validator's rejection is "
                 "in the transcript above.")
+    if outcome == "no_better_path":
+        return ("I looked at every alternative route, and none of them carries "
+                "less delay than the path this flow is already on. The current "
+                "path is the best available, so I did not change the network.")
+    if outcome == "awaiting_approval":
+        return ("The safety validator approved an action, but its risk level is "
+                "above the unattended threshold, so I am holding it for human "
+                "approval. Nothing was changed.")
     if outcome == "lab_offline":
         return ("The network lab is unreachable, so I could not measure or "
                 "change anything. No action was attempted.")
     if outcome == "cancelled":
         return "The run was cancelled before it finished. Any completed step is still in the audit trail."
     if outcome == "unverified":
+        # `unverified` covers two different situations and the answer must
+        # not conflate them: the mutation may never have reached the
+        # controller, or it may have run and the follow-up measurement may be
+        # missing. Only the second one is "post-action telemetry missing".
+        if execution is None:
+            return ("The action did not execute, so there is nothing to "
+                    "verify against the intent. A successful command is not a "
+                    "verified fix.")
         return ("The action ran, but post-change telemetry could not be "
                 "collected, so recovery is unverified. A successful command is "
                 "not a verified fix.")

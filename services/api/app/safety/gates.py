@@ -50,6 +50,52 @@ from app.schemas.domain import (
 
 
 # ---------------------------------------------------------------------------
+# The latency violation predicate, shared by the evidence gate and the
+# verification gate
+# ---------------------------------------------------------------------------
+
+#: The fraction of individual samples that may exceed the target before the
+#: flow counts as violating it. Shared by both gates: if the two gates used
+#: different statistics, the system could act on a violation the verification
+#: gate would not recognise, or report a success the evidence gate would
+#: have called a violation.
+VIOLATION_SAMPLE_FRACTION = 0.25
+
+
+def latency_violation(flow: Any, target_ms: float,
+                       fraction: float = VIOLATION_SAMPLE_FRACTION) -> bool | None:
+    """Does this flow's latency exceed the target?
+
+    Returns True (violated), False (not violated) or None (unmeasurable).
+
+    The rule is applied to the individual samples when the lab reported them,
+    because a latency service-level objective is a statement about the
+    distribution of experienced delays, not about their average. Comparing
+    only the mean makes the verdict a coin flip on a flow oscillating around
+    the target.
+
+    With fewer than two samples there is no distribution to speak of, so the
+    rule falls back on the reported peak and then on the reported latency.
+    """
+    if flow is None:
+        return None
+    latency = getattr(flow, "latency_ms", None)
+    if latency is None or latency < 0:
+        return None
+
+    samples = [s for s in (getattr(flow, "samples", None) or [])
+               if isinstance(s, (int, float)) and s >= 0]
+    if len(samples) >= 2:
+        over = sum(1 for s in samples if s > target_ms)
+        return (over / len(samples)) >= fraction
+
+    peak = getattr(flow, "max_latency_ms", None)
+    if isinstance(peak, (int, float)) and peak > target_ms:
+        return True
+    return latency > target_ms
+
+
+# ---------------------------------------------------------------------------
 # Gate 1 - evidence sufficiency
 # ---------------------------------------------------------------------------
 
@@ -296,6 +342,12 @@ class SafetyPolicy:
     # Links that never carry a protected flow and may be rerouted onto.
     protected_links: list[str] = field(default_factory=list)
     require_approval_for: tuple[RiskLevel, ...] = (RiskLevel.MEDIUM, RiskLevel.HIGH)
+    # The endpoints of the intent the action is supposed to satisfy. The
+    # action's own endpoints are checked against the path by
+    # `path_well_formed`; these are checked against the intent by
+    # `flow_scope`, so that an action aimed at the wrong flow cannot pass.
+    intent_src: str | None = None
+    intent_dst: str | None = None
 
 
 def validate_reroute(
@@ -381,6 +433,12 @@ def validate_reroute(
           missing_links=missing_links, down_links=down_links)
 
     # 6. Capacity: the path's narrowest link must be able to carry the flow.
+    #    A link the lab is actively congesting counts as a capacity violation
+    #    even when its byte counters have not moved yet: the scenario injects
+    #    delay, so utilisation stays at 0% while the link is the bottleneck.
+    #    Without this, the gate would wave through a reroute straight over the
+    #    congested link and only the planner's ranking kept such a path out.
+    congested_ids = set(getattr(snapshot, "congested_links", None) or [])
     bottlenecks = []
     for a, b in zip(path, path[1:]):
         link = _link_between(topo, a, b)
@@ -388,8 +446,10 @@ def validate_reroute(
             continue
         tel = next((l for l in snapshot.links if l.link_id == link.id), None)
         util = tel.utilization_pct if tel else 0.0
-        if util >= settings.congestion_utilization_threshold * 100.0:
-            bottlenecks.append({"link_id": link.id, "utilization_pct": util})
+        if link.id in congested_ids or util >= settings.congestion_utilization_threshold * 100.0:
+            bottlenecks.append({"link_id": link.id, "utilization_pct": util,
+                                "reason": "reported congested" if link.id in congested_ids
+                                else "utilisation above threshold"})
     check("capacity_respected", not bottlenecks,
           "no link on the path is already congested" if not bottlenecks
           else f"congested links on path: {[b['link_id'] for b in bottlenecks]}",
@@ -398,7 +458,14 @@ def validate_reroute(
     # 7. Protected flows are not modified: the action must not route over a
     #    link that carries a protected flow, and must not alter a protected
     #    flow's own path.
-    path_link_ids = {f"{a}-{b}" for a, b in zip(path, path[1:])}
+    #
+    #    The comparison is over *switch* edges, not over nodes. Two flows that
+    #    share a destination host necessarily share the access edge and the
+    #    access switch, so a node-level test would reject every possible path
+    #    to that destination -- the check could never pass, and the safety
+    #    gate would refuse every legitimate repair.
+    path_link_ids = {f"{a}-{b}" for a, b in zip(path, path[1:])
+                     if not a.startswith("h") and not b.startswith("h")}
     action_nodes = set(path)
     protected_link_touched = [
         pid for pid in policy.protected_links
@@ -406,7 +473,7 @@ def validate_reroute(
     ]
     protected_flows_redirected = [
         spec.flow_id for spec in policy.protected_flows
-        if _flow_crosses(snapshot, spec, action_nodes)
+        if _flow_crosses(snapshot, spec, action_nodes, path_link_ids)
     ]
     protected_ok = (not protected_link_touched
                     and not protected_flows_redirected)
@@ -418,13 +485,25 @@ def validate_reroute(
           protected_links_touched=protected_link_touched,
           protected_flows_redirected=protected_flows_redirected)
 
-    # 8. Scoped to the intended flow: the action may only change the path
-    #    between its own endpoints, not insert or remove endpoints.
-    scope_ok = path[0] == action.src_host and path[-1] == action.dst_host
+    # 8. Scoped to the intended flow: the action must act on the flow the
+    #    intent is about, not merely on a well-formed path between its own
+    #    endpoints. `path_well_formed` already checks the path against the
+    #    action's endpoints; this checks the action against the intent's.
+    scope_ok = True
+    scope_detail = "the action's endpoints are the intent's endpoints"
+    if policy.intent_src is not None and action.src_host != policy.intent_src:
+        scope_ok = False
+        scope_detail = (f"action source {action.src_host} is not the intent's "
+                        f"source {policy.intent_src}")
+    elif policy.intent_dst is not None and action.dst_host != policy.intent_dst:
+        scope_ok = False
+        scope_detail = (f"action destination {action.dst_host} is not the "
+                        f"intent's destination {policy.intent_dst}")
     check("flow_scope", scope_ok,
-          "path is scoped to the declared src/dst" if scope_ok
-          else "path endpoints do not match the declared flow",
-          declared_src=action.src_host, declared_dst=action.dst_host)
+          scope_detail if scope_ok
+          else f"the action is not scoped to the intent: {scope_detail}",
+          declared_src=action.src_host, declared_dst=action.dst_host,
+          intent_src=policy.intent_src, intent_dst=policy.intent_dst)
 
     # 9. Expiry / duplication guards.
     age = (now - action.created_at if getattr(action, "created_at", None) else timedelta(0))
@@ -441,22 +520,54 @@ def validate_reroute(
                    requires_approval=requires_approval)
 
 
-def _flow_crosses(snapshot: NetworkSnapshot, spec: ProtectedFlowSpec,
-                  action_nodes: set[str]) -> bool:
-    """True when the reroute's nodes intersect the protected flow's path.
+def _protected_flow(snapshot: NetworkSnapshot,
+                    spec: ProtectedFlowSpec) -> FlowTelemetry | None:
+    """Find a protected flow's measurement in a snapshot.
 
-    A protected flow is only safe if the action leaves it on the same route,
-    so intersecting nodes is treated as a violation. Where the protected
-    flow's current path is unknown we err on the side of caution.
+    The flow is looked up by its endpoints when the spec has them and by its
+    id otherwise, because the lab names its flows (F1, F2, ...) while the
+    schema's example identifies a flow by its endpoints ("h3->h4").
     """
     for flow in snapshot.flows:
-        if flow.flow_id != spec.flow_id:
-            continue
-        current_path = getattr(flow, "path", None) or []
-        if not current_path:
-            return bool(action_nodes & _flow_nodes(snapshot, spec))
-        return bool(action_nodes & set(current_path))
-    return False
+        if flow.flow_id == spec.flow_id:
+            return flow
+    if spec.src_host and spec.dst_host:
+        for flow in snapshot.flows:
+            if (flow.src_host == spec.src_host
+                    and flow.dst_host == spec.dst_host):
+                return flow
+    return None
+
+
+def _flow_crosses(snapshot: NetworkSnapshot, spec: ProtectedFlowSpec,
+                  action_nodes: set[str],
+                  action_links: set[str] | None = None) -> bool:
+    """True when the reroute would divert a protected flow.
+
+    A protected flow is only safe if the action leaves it on the same route.
+    The comparison is over the inter-switch edges each path uses: a reroute
+    can only divert a protected flow by taking an edge that flow is on, and
+    two flows that merely share a destination host or an access switch are
+    not affected by each other's routing.
+
+    Where the protected flow's current path is unknown we fall back on the
+    node set, which errs on the side of caution.
+    """
+    flow = _protected_flow(snapshot, spec)
+    if flow is None:
+        return False
+    current_path = getattr(flow, "path", None) or []
+    if not current_path:
+        # The protected flow's path is unknown: err on the side of caution.
+        return bool(action_nodes & _flow_nodes(snapshot, spec))
+    current_links = {f"{a}-{b}" for a, b in zip(current_path, current_path[1:])
+                     if not a.startswith("h") and not b.startswith("h")}
+    if action_links is not None:
+        # The path is known, so the edge comparison decides. A protected flow
+        # that stays on one switch uses no inter-switch edge, and nothing the
+        # action does to the fabric can divert it.
+        return bool(action_links & current_links)
+    return bool(action_nodes & set(current_path))
 
 
 def _flow_nodes(snapshot: NetworkSnapshot, spec: ProtectedFlowSpec) -> set[str]:
@@ -563,19 +674,26 @@ def verify_recovery(
     protected_states = protected_statuses or []
     protected_ok = all(p.ok for p in protected_states) if protected_states else True
 
-    intent_satisfied = after.latency_ms <= intent.max_latency_ms
+    # The post-action latency is judged by the *same* predicate the evidence
+    # gate uses (Eq. 4), so the two gates cannot disagree about what "the
+    # intent is met" means: the system would otherwise act on a violation
+    # that the verification gate did not recognise.
+    violated = latency_violation(after, intent.max_latency_ms)
+    intent_satisfied = (violated is False)
     loss_ok = (intent.max_packet_loss_pct is None
                or after.packet_loss_pct is None
                or after.packet_loss_pct <= intent.max_packet_loss_pct)
 
+    protected_note = (" and protected flows are within their constraints"
+                      if protected_states else "")
     if intent_satisfied and loss_ok and protected_ok:
         return VerificationOutcome(
             status=VerificationStatus.SUCCESS,
             intent_satisfied=True, protected_ok=True,
             before=before, after=after, protected_flows=protected_states,
             reason=f"Measured latency {after.latency_ms:.1f} ms is within the "
-                   f"{intent.max_latency_ms:.0f} ms intent and protected flows "
-                   "are within their constraints.")
+                   f"{intent.max_latency_ms:.0f} ms intent"
+                   f"{protected_note}.")
 
     if protected_ok and intent_satisfied and not loss_ok:
         return VerificationOutcome(
@@ -585,6 +703,18 @@ def verify_recovery(
             reason=(f"Latency {after.latency_ms:.1f} ms now satisfies the intent, "
                     f"but packet loss {after.packet_loss_pct}% exceeds the "
                     f"{intent.max_packet_loss_pct}% limit."))
+
+    # A protected flow that is outside its constraints makes the recovery
+    # unacceptable, whatever happened to the latency. This is checked before
+    # the improvement test: an improvement that also broke a protected flow
+    # is not a partial improvement, it is a failure.
+    if not protected_ok:
+        return VerificationOutcome(
+            status=VerificationStatus.FAILED,
+            intent_satisfied=False, protected_ok=False,
+            before=before, after=after, protected_flows=protected_states,
+            reason="A protected flow is outside its allowed constraints after "
+                   "the action; the recovery is not acceptable.")
 
     baseline = before.latency_ms if before and before.latency_ms else None
     improved = baseline is not None and after.latency_ms < baseline
@@ -598,14 +728,6 @@ def verify_recovery(
                     f"{after.latency_ms:.1f} ms but is still above the "
                     f"{intent.max_latency_ms:.0f} ms intent. Reported as "
                     "partial improvement, not successful recovery."))
-
-    if not protected_ok:
-        return VerificationOutcome(
-            status=VerificationStatus.FAILED,
-            intent_satisfied=False, protected_ok=False,
-            before=before, after=after, protected_flows=protected_states,
-            reason="A protected flow is outside its allowed constraints after "
-                   "the action; the recovery is not acceptable.")
 
     return VerificationOutcome(
         status=VerificationStatus.FAILED,
@@ -624,13 +746,23 @@ def check_protected_flows(
 ) -> list[ProtectedFlowStatus]:
     """Evaluate each protected flow against its own constraints."""
     path_by_flow = path_by_flow or {}
-    before_by_id = {f.flow_id: f for f in before}
-    after_by_id = {f.flow_id: f for f in after}
+    def _index(flows: list[FlowTelemetry]) -> dict[Any, FlowTelemetry]:
+        out: dict[Any, FlowTelemetry] = {}
+        for f in flows:
+            out[f.flow_id] = f
+            out[(f.src_host, f.dst_host)] = f
+        return out
+
+    before_by_id = _index(before)
+    after_by_id = _index(after)
 
     results: list[ProtectedFlowStatus] = []
     for spec in protected:
-        before_f = before_by_id.get(spec.flow_id)
-        after_f = after_by_id.get(spec.flow_id)
+        keys = [spec.flow_id]
+        if spec.src_host and spec.dst_host:
+            keys.append((spec.src_host, spec.dst_host))
+        before_f = next((before_by_id[k] for k in keys if k in before_by_id), None)
+        after_f = next((after_by_id[k] for k in keys if k in after_by_id), None)
         cur = after_f or before_f
 
         ok = True

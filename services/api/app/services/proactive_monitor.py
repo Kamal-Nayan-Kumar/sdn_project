@@ -82,8 +82,24 @@ class ProactiveMonitor:
                     continue
 
                 try:
-                    raw_snap = self.lab_client.snapshot(latency_count=3)
-                    snap = NetworkSnapshot.model_validate(raw_snap)
+                    # The lab's raw snapshot is not a domain snapshot: it has
+                    # no topology and its flows are a dict keyed by
+                    # "src->dst". Validating it as a NetworkSnapshot raised on
+                    # every poll, so the monitor never once read a
+                    # measurement. Go through the same tool the agent uses,
+                    # which projects the lab payload onto the declared
+                    # schemas.
+                    from app.tools import run_tool
+
+                    result = run_tool(
+                        "get_network_snapshot",
+                        {"latency_count": 3},
+                        self.lab_client,
+                    )
+                    if not result.ok:
+                        continue
+                    snap = NetworkSnapshot.model_validate_json(
+                        result.outputs["snapshot"])
                 except LabUnavailable:
                     continue
                 except Exception as exc:
@@ -100,7 +116,19 @@ class ProactiveMonitor:
                 if flow is None or flow.latency_ms is None or flow.latency_ms <= 0:
                     continue
 
-                is_violation = flow.latency_ms > self.target_latency_ms
+                # Use the agent's own violation rule, so the monitor and the
+                # chat-triggered workflow agree on what "violated" means.
+                # A mean-only comparison would let a flow oscillating around
+                # the target slip through here while the chat path caught it.
+                from app.agents.workflow import _default_intent, _is_violated
+
+                intent = _default_intent()
+                intent = intent.model_copy(update={
+                    "src_host": self.src_host,
+                    "dst_host": self.dst_host,
+                    "max_latency_ms": self.target_latency_ms,
+                })
+                is_violation = _is_violated(flow, intent) is True
                 if is_violation:
                     self.consecutive_violations += 1
                     LOG.info(

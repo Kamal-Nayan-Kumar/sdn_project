@@ -47,15 +47,17 @@ LOG = logging.getLogger("sdn_ryu")
 # ---------------------------------------------------------------------------
 
 #: Ordered list of switch-level links with their capacity and delay.
-#: These values mirror network-lab/topologies/multipath.py exactly. The lab
-#: cross-checks them at startup; if they ever drift, the lab refuses to run
-#: rather than telemetry quietly describing a different topology.
+#: These values mirror network-lab/topologies/multipath.py exactly. They used
+#: to drift (5/5/8/5/12 here against 4/4/5/4/7 there) and the comment above
+#: claimed a startup cross-check that did not exist. The values now match the
+#: topology the lab actually builds, and `network-lab/run_lab.py` asserts the
+#: match at startup instead of trusting a comment.
 LINKS: dict[str, dict[str, Any]] = {
-    "s1-s2": {"capacity_mbps": 1000, "delay_ms": 5, "congestible": True},
-    "s2-s4": {"capacity_mbps": 1000, "delay_ms": 5, "congestible": True},
-    "s1-s3": {"capacity_mbps": 1000, "delay_ms": 8, "congestible": False},
-    "s2-s3": {"capacity_mbps": 1000, "delay_ms": 5, "congestible": False},
-    "s3-s4": {"capacity_mbps": 1000, "delay_ms": 12, "congestible": False},
+    "s1-s2": {"capacity_mbps": 1000, "delay_ms": 4, "congestible": True},
+    "s2-s4": {"capacity_mbps": 100, "delay_ms": 4, "congestible": True},
+    "s1-s3": {"capacity_mbps": 1000, "delay_ms": 5, "congestible": False},
+    "s2-s3": {"capacity_mbps": 1000, "delay_ms": 4, "congestible": False},
+    "s3-s4": {"capacity_mbps": 1000, "delay_ms": 7, "congestible": False},
 }
 
 #: Host attachments: host -> (switch, port).
@@ -355,6 +357,20 @@ class SDNIntentController(app_manager.RyuApp):
         Used by reset. The rules are the same shape a reroute installs, only
         with the baseline path, so a reset leaves the data plane in exactly
         the state a fresh lab would have.
+
+        Two things this has to get right, and did not:
+
+        *   **Both directions.** The reverse direction runs along the
+            *reversed* switch path, so it needs its own egress port on each
+            switch. Installing the forward path for the reverse direction too
+            pinned the reply to the wrong port -- the reset left the return
+            traffic going the wrong way around the ring.
+        *   **Stale overrides must go first.** A reroute installs a
+            priority-100 rule with the same match as the baseline rule. If
+            both are present, the datapath keeps them in insertion order
+            within a priority and keeps matching the *older* one, so the
+            reset would report the baseline path while the traffic still
+            took the rerouted one.
         """
         import itertools
 
@@ -367,15 +383,34 @@ class SDNIntentController(app_manager.RyuApp):
                 if not paths:
                     continue
                 switches = paths[0]
+                reverse_switches = list(reversed(switches))
                 for dpid, dp in list(self.datapaths.items()):
                     parser = dp.ofproto_parser
                     match = self._match_for(parser, src_ip, dst_ip)
+                    rev_match = self._match_for(parser, dst_ip, src_ip)
+
+                    # Remove any priority-100 rule for this flow first, so
+                    # the baseline rule cannot be shadowed by an older
+                    # override with the same priority and the same match.
+                    for stale in (match, rev_match):
+                        dp.send_msg(parser.OFPFlowMod(
+                            datapath=dp, command=dp.ofproto.OFPFC_DELETE,
+                            out_port=dp.ofproto.OFPP_ANY,
+                            out_group=dp.ofproto.OFPG_ANY,
+                            match=stale, priority=100))
+
                     out_port = self._port_for(dpid, switches, src_ip, dst_ip)
-                    if out_port is None:
-                        continue
-                    self.add_flow(dp, 100, match,
-                                  [parser.OFPActionOutput(out_port)], idle=0)
-                    installed += 1
+                    if out_port is not None:
+                        self.add_flow(dp, 100, match,
+                                      [parser.OFPActionOutput(out_port)], idle=0)
+                        installed += 1
+                    rev_out_port = self._port_for(dpid, reverse_switches,
+                                                  dst_ip, src_ip)
+                    if rev_out_port is not None:
+                        self.add_flow(dp, 100, rev_match,
+                                      [parser.OFPActionOutput(rev_out_port)],
+                                      idle=0)
+                        installed += 1
         return installed
 
     def add_flow(self, datapath, priority, match, actions, idle=0, hard=0):
@@ -636,15 +671,10 @@ class IntentRestController(ControllerBase):
             FLOW_OVERRIDES.clear()
             CONGESTION.clear()
         # Pin every host pair back to its baseline path at priority 100.
-        # Deleting the override alone was not enough: the priority-1 L2
-        # learning rules installed while traffic was on the alternate path
-        # have no idle timeout, so packets kept taking the old route while
-        # the dashboard reported the baseline one. Installing the baseline
-        # explicitly makes reset deterministic without flushing the table
-        # (a full flush raced the table-miss reinstall and blackholed ARP).
         installed = self.app.install_default_paths()
         LOG.info("reset installed %d baseline flow rules", installed)
-        return self._json({"ok": True, "message": "flow overrides cleared"})
+        return self._json({"ok": True, "message": "flow overrides cleared",
+                           "baseline_rules": installed})
 
     @route("sdn", "/v1/congestion", methods=["POST"])
     def congestion(self, req, **kwargs):

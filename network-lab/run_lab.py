@@ -64,6 +64,64 @@ REST_TOKEN = os.environ.get("LAB_API_TOKEN", "")
 _QUIET_ETHTYPES = frozenset({0x88CC, 0x86DD})
 
 
+def _assert_controller_topology_matches() -> None:
+    """Fail fast if the controller's topology mirror has drifted.
+
+    The controller keeps its own copy of the link table because it has to
+    answer path questions without importing the lab's topology module. The
+    two copies used to disagree on the link delays, and a comment claimed a
+    startup cross-check that was never written -- so telemetry described one
+    topology while the datapath was built from another. This parses the
+    controller's `LINKS` literal and compares it with the topology the lab
+    is about to build.
+    """
+    import ast
+
+    controller_path = os.path.join(PROJECT_ROOT, "network-lab", "controller",
+                                   "ryu_controller.py")
+    try:
+        with open(controller_path, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), filename=controller_path)
+    except (OSError, SyntaxError) as exc:
+        LOG.warning("could not read the controller topology mirror: %s", exc)
+        return
+
+    controller_links: dict[str, dict[str, Any]] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.AnnAssign):
+            continue
+        target = node.target
+        if not (isinstance(target, ast.Name) and target.id == "LINKS"):
+            continue
+        try:
+            controller_links = ast.literal_eval(node.value)
+        except ValueError:  # pragma: no cover - defensive
+            LOG.warning("could not evaluate the controller LINKS literal")
+            return
+
+    mismatches: list[str] = []
+    for link_id, spec in TOPO.SWITCH_LINKS.items():
+        mirror = controller_links.get(link_id)
+        if mirror is None:
+            mismatches.append(f"{link_id}: missing from the controller mirror")
+            continue
+        for key in ("capacity_mbps", "delay_ms", "congestible"):
+            if mirror.get(key) != spec.get(key):
+                mismatches.append(
+                    f"{link_id}.{key}: controller={mirror.get(key)} "
+                    f"topology={spec.get(key)}")
+    for link_id in controller_links:
+        if link_id not in TOPO.SWITCH_LINKS:
+            mismatches.append(f"{link_id}: not present in the lab topology")
+
+    if mismatches:
+        raise RuntimeError(
+            "the Ryu controller's topology mirror has drifted from "
+            "network-lab/topologies/multipath.py: " + "; ".join(mismatches))
+    LOG.info("controller topology mirror matches the lab topology "
+             "(%d links)", len(TOPO.SWITCH_LINKS))
+
+
 def _disable_ipv6(net: Any) -> int:
     """Turn IPv6 off on every Mininet interface.
 
@@ -110,6 +168,12 @@ class Lab:
         self.congestion: dict[str, Any] = {}
         self._lock = threading.Lock()
         self.traffic_processes: list[subprocess.Popen] = []
+        # link_id -> the delay the link is *actually* carrying right now.
+        # The scenario injects extra delay, so the configured delay in
+        # TOPO.SWITCH_LINKS is no longer the truth; telemetry has to report
+        # the effective value or the evidence gate cannot tell which link the
+        # latency accrued on.
+        self._effective_delay_ms: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # startup
@@ -184,6 +248,8 @@ class Lab:
         from mininet.topo import Topo
 
         setLogLevel("warning")
+
+        _assert_controller_topology_matches()
 
         # Pick the switch backend (OVS preferred, per the spec).
         from switches import Of13UserSwitch, ovs_available
@@ -272,6 +338,44 @@ class Lab:
         except Exception:
             return 0
 
+    def flow_table_view(self) -> dict[str, Any]:
+        """The datapaths' installed flow tables, for diagnostics.
+
+        The lab runs in a network namespace the host cannot reach, so the
+        controller's own REST API is only reachable from inside. Surfacing
+        it here is the only way to see what the switches actually have
+        installed -- which is what settles "is the flow really taking the
+        path the controller says it is?".
+        """
+        try:
+            with urllib.request.urlopen(
+                    "http://127.0.0.1:8080/v1/stats/flows", timeout=5.0) as resp:
+                payload = json.loads(resp.read().decode())
+                return {"ok": True, "flows": payload.get("flows", [])}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def port_stats_view(self) -> dict[str, Any]:
+        """The datapaths' port counters, as the controller last polled them."""
+        try:
+            with urllib.request.urlopen(
+                    "http://127.0.0.1:8080/v1/port-stats", timeout=5.0) as resp:
+                payload = json.loads(resp.read().decode())
+            return {"ok": True, **payload}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def overrides_view(self) -> dict[str, Any]:
+        """The controller's installed per-flow path overrides."""
+        try:
+            with urllib.request.urlopen(
+                    "http://127.0.0.1:8080/v1/flow-overrides",
+                    timeout=5.0) as resp:
+                return {"ok": True,
+                        "overrides": json.loads(resp.read().decode())}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
     def controller_view(self) -> dict[str, Any]:
         """Raw view of the controller's datapath table, for diagnostics.
 
@@ -347,7 +451,11 @@ class Lab:
                 try:
                     link.intf1.config(delay=target_delay)
                     link.intf2.config(delay=target_delay)
+                    with self._lock:
+                        self._effective_delay_ms[link_id] = float(
+                            base_delay + extra_delay_ms)
                     LOG.info("link %s delay adjusted to %s for congestion scenario", link_id, target_delay)
+                    LOG.info("link %s qdisc: %s", link_id, self._qdisc_state(link))
                 except Exception as exc:
                     LOG.warning("could not configure delay on %s: %s", link_id, exc)
 
@@ -365,6 +473,29 @@ class Lab:
                     link.intf2.config(delay=base_delay)
                 except Exception:
                     pass
+                with self._lock:
+                    self._effective_delay_ms.pop(lid, None)
+                LOG.info("link %s delay restored to %s", lid, base_delay)
+                LOG.info("link %s qdisc: %s", lid, self._qdisc_state(link))
+
+    @staticmethod
+    def _qdisc_state(link: Any) -> str:
+        """The traffic-control state of a link, for the log.
+
+        The scenario changes the data plane with `tc`, and a `tc` command
+        that fails does not raise: Mininet prints the error and carries on.
+        Without this in the log, a delay that silently failed to apply looks
+        exactly like a delay that applied and simply had no effect.
+        """
+        parts = []
+        for intf in (link.intf1, link.intf2):
+            try:
+                out = intf.cmd("tc qdisc show dev %s" % intf.name)
+            except Exception as exc:  # pragma: no cover - diagnostics only
+                parts.append(f"{intf.name}: <error {exc}>")
+                continue
+            parts.append(f"{intf.name}: {' | '.join(out.split())}")
+        return " ; ".join(parts)
 
     # ------------------------------------------------------------------
     # scenarios
@@ -374,19 +505,28 @@ class Lab:
     TRAFFIC_PORT = 5201
 
     def start_congestion(self, link_id: str = "s2-s4", rate_mbps: float = 400.0,
-                         duration_seconds: float = 0.0) -> dict[str, Any]:
-        """Put real UDP traffic on `link_id`'s bottleneck link.
+                         duration_seconds: float = 0.0,
+                         report_degraded: bool = True) -> dict[str, Any]:
+        """Degrade `link_id` so the flow that crosses it breaches its intent.
 
-        The generator runs from h2 (attached to s1) to h3 (attached to s4), so
-        its traffic is forced over the s2-s4 link by the shortest path.
+        WHAT THIS ACTUALLY DOES: it applies an extra 40 ms of netem delay to
+        both interfaces of the link. It does *not* generate offered load --
+        `rate_mbps` is recorded and reported but no traffic process is
+        started, so the link's byte counters stay at zero and the measured
+        utilisation stays at 0%.
 
-        The traffic itself comes from `network-lab/traffic_gen.py`, not from
-        iperf3. The lab runs in a user namespace where nothing can be
-        installed, and an absent iperf3 previously produced a scenario that
-        reported success while generating no packets at all -- every link read
-        0% and the flow latencies never moved. The generator here has no
-        dependency beyond the standard library, and its exit status is checked
-        before the scenario is recorded, so a failure is reported as a failure.
+        That is a deliberate choice, and it has a consequence worth stating:
+        the fault injected is a *latency* fault, not a *bandwidth* fault. It
+        reproduces the symptom the agent is asked to diagnose (the flow's
+        latency exceeds its target and the delay accrues on a named link),
+        and it is reproducible and reversible, but it does not reproduce
+        queueing delay, packet loss or utilisation. Any claim about the
+        system under *offered-load* congestion must be measured separately.
+
+        `network-lab/traffic_gen.py` exists and is a standard-library UDP
+        generator. `start_background_load` wires it into a host pair so that the
+        lab can be driven with real offered load; see that method's docstring
+        for why this scenario does not use it by default.
         """
         if link_id not in TOPO.SWITCH_LINKS:
             raise ValueError(f"unknown link {link_id}")
@@ -407,24 +547,92 @@ class Lab:
                 "duration_seconds": duration_seconds,
                 "started_at": time.time(),
                 "tool": "udp-gen",
+                # When False the snapshot reports the link as up and its byte
+                # counters as normal; only the effective delay hints at it.
+                # Used to demonstrate that the agent can localise the fault
+                # from telemetry alone, not from a lab-side flag.
+                "report_degraded": bool(report_degraded),
             }
         LOG.info("congestion started on %s at %s Mbps", link_id, rate_mbps)
         return {"ok": True, "link_id": link_id, "rate_mbps": rate_mbps,
                 "duration_seconds": duration_seconds, "tool": "udp-gen"}
 
-    def stop_congestion(self, link_id: str | None = None) -> dict[str, Any]:
-        stopped: list[str] = []
-        for proc in self.traffic_processes:
+    def start_background_load(self, src_host: str = "h2",
+                              dst_host: str = "h4",
+                              rate_mbps: float = 5.0,
+                              duration_seconds: float = 0.0,
+                              port: int = TRAFFIC_PORT) -> dict[str, Any]:
+        """Drive a real UDP stream across the fabric.
+
+        This is the experiment the latency-fault congestion scenario cannot
+        stand in for: offered load that the port counters actually see, so the
+        controller's utilisation telemetry, the utilisation tie-breaker in the
+        candidate score, and the utilization branch of the evidence gate are
+        exercised against live byte counters rather than left at zero.
+
+        The source and sink run inside the two hosts' network namespaces via
+        ``Node.popen`` (``Node.cmd`` drives an interactive pty and is not safe
+        to use concurrently). The stream traverses whatever the controller has
+        pinned both hosts to; with the default paths that is the shortest
+        route, which for h2 -> h4 crosses the congestible s2-s4 link.
+
+        The pure-Python datapath forwards in the userspace, so the achievable
+        rate is bounded by the control loop; ``rate_mbps`` is the *offered*
+        rate, and the measured utilisation is whatever the counters report.
+        """
+        if self.net is None:
+            raise RuntimeError("network is not started")
+        hosts = {h.name: h for h in self.net.hosts}
+        for name in (src_host, dst_host):
+            if name not in hosts:
+                raise ValueError(f"unknown host {name!r}; have {sorted(hosts)}")
+
+        if src_host == dst_host:
+            raise ValueError("src and dst must differ")
+
+        # Reap anything left from a previous run so byte counters only see
+        # this scenario's traffic.
+        self.stop_background_load()
+
+        src, dst = hosts[src_host], hosts[dst_host]
+        dst_ip = str(TOPO.HOST_IP[dst_host])
+        traffic_gen = os.path.join(PROJECT_ROOT, "network-lab", "traffic_gen.py")
+        python = sys.executable
+
+        sink = dst.popen([python, traffic_gen, "sink",
+                          "--port", str(port)])
+        source = None
+        try:
+            # Give the listener a moment to bind before the source starts.
+            time.sleep(0.5)
+            source = src.popen([python, traffic_gen, "source",
+                                "--dst", dst_ip, "--rate-mbps", str(rate_mbps),
+                                "--port", str(port),
+                                "--duration", str(duration_seconds)])
+        except Exception:
+            try:
+                sink.terminate()
+            except Exception:
+                pass
+            raise
+
+        with self._lock:
+            self.traffic_processes = [sink, source]
+
+        LOG.info("background load %s -> %s at %s Mbps", src_host, dst_host, rate_mbps)
+        return {"ok": True, "src_host": src_host, "dst_host": dst_host,
+                "rate_mbps": rate_mbps, "dst_ip": dst_ip,
+                "duration_seconds": duration_seconds, "tool": "udp-gen"}
+
+    def stop_background_load(self) -> dict[str, Any]:
+        stopped = []
+        for proc in getattr(self, "traffic_processes", []):
             try:
                 proc.terminate()
             except Exception:
                 pass
-        # Reap without blocking: the sink and the source are both simple
-        # loops, so a short grace period is enough. `Node.cmd` is deliberately
-        # not used here -- it drives an interactive pty and raises a bare
-        # AssertionError when another command is already in flight on the host.
         deadline = time.time() + 2.0
-        for proc in self.traffic_processes:
+        for proc in getattr(self, "traffic_processes", []):
             try:
                 proc.wait(timeout=max(0.05, deadline - time.time()))
             except Exception:
@@ -432,18 +640,59 @@ class Lab:
                     proc.kill()
                 except Exception:
                     pass
+        if getattr(self, "traffic_processes", []):
+            stopped.append("traffic")
         self.traffic_processes = []
-        self._restore_link_delays()
+        return {"ok": True, "stopped": stopped}
+
+    def set_link_capacity(self, link_id: str, capacity_mbps: float) -> dict[str, Any]:
+        """Reconfigure a link's *configured* capacity, in place.
+
+        The configured capacity is the denominator against which the telemetry
+        collector reports utilisation (measured_rate / configured_capacity), so
+        this models a physically slower link: the same byte counters now report
+        a higher utilisation. The Mininet link itself is still built at the
+        topology's original rate and nothing in the datapath is rate-limited;
+        the change is exactly the link-rate parameter a physical deployment
+        would have in its monitoring configuration.
+
+        Mutating it here would leak into every other scenario, so the caller
+        (the experiment harness) only invokes it inside the dedicated S7
+        scenario, and the harness restarts the lab for every scenario, which
+        reloads the topology module and restores the default.
+        """
+        if link_id not in TOPO.SWITCH_LINKS:
+            raise ValueError(f"unknown link {link_id}")
+        cap = float(capacity_mbps)
+        if cap <= 0:
+            raise ValueError("capacity_mbps must be positive")
+        with self._lock:
+            spec = TOPO.SWITCH_LINKS[link_id]
+            spec["capacity_mbps"] = cap
+            if self.collector is not None:
+                self.collector.link_specs[link_id] = spec
+                for (node, port), (lid, _old) in list(self.collector._port_map.items()):
+                    if lid == link_id:
+                        self.collector._port_map[(node, port)] = (lid, cap)
+        LOG.info("link %s configured capacity -> %.1f Mbps", link_id, cap)
+        return {"ok": True, "link_id": link_id, "capacity_mbps": cap}
+
+    def stop_congestion(self, link_id: str | None = None) -> dict[str, Any]:
+        # Note: this stops the *delay injection*, not the background traffic;
+        # use stop_background_load for the load itself.
+        stopped: list[str] = []
         with self._lock:
             keys = [link_id] if link_id else list(self.congestion)
             for key in keys:
                 if self.congestion.pop(key, None) is not None:
                     stopped.append(key)
+        self._restore_link_delays()
         LOG.info("congestion stopped on %s", stopped or "(none)")
         return {"ok": True, "stopped": stopped}
 
     def reset(self) -> dict[str, Any]:
         """Restore the baseline: stop traffic, clear flow overrides."""
+        self.stop_background_load()
         self.stop_congestion()
         cleared = False
         try:
@@ -511,8 +760,16 @@ class Lab:
         snap = self.collector.snapshot()
         with self._lock:
             congested = list(self.congestion)
+        with self._lock:
+            effective = dict(self._effective_delay_ms)
+        degraded_now = [lid for lid in congested
+                        if self.congestion.get(lid, {}).get("report_degraded", True)]
         for link_id in snap["links"]:
-            snap["links"][link_id]["status"] = "down" if link_id in congested else "up"
+            snap["links"][link_id]["status"] = "down" if link_id in degraded_now else "up"
+            # Report the delay the link is actually carrying, not the delay it
+            # was built with.
+            if link_id in effective:
+                snap["links"][link_id]["delay_ms"] = effective[link_id]
         # Annotate each measured flow with flow_id, kind, and the path the controller
         # currently has installed.
         flow_id_map = {"h1->h4": "F1", "h3->h4": "F2", "h1->h3": "F3"}
@@ -523,12 +780,12 @@ class Lab:
                 flow["kind"] = "video" if key == "h1->h4" else ("voice" if "h3" in key else "other")
                 flow["path"] = self.current_path(key)
         snap["switch_backend"] = self.switch_backend
-        snap["active_scenario"] = "congestion" if congested else None
+        snap["active_scenario"] = "congestion" if degraded_now else None
         # Publish the congested set here too. It used to appear only on
         # /v1/status, so every snapshot consumer -- the agent's path planner
         # included -- read it as empty and treated a congested link as an
         # ordinary one.
-        snap["congested_links"] = congested
+        snap["congested_links"] = degraded_now
         snap["controller_reachable"] = self._connected_switches() > 0
         self.last_snapshot = snap
         return snap
@@ -579,12 +836,19 @@ class Lab:
         for sw in TOPO.switch_ids():
             nodes.append({"id": sw, "kind": "switch", "label": sw})
         links = []
+        with self._lock:
+            congested = set(self.congestion)
         for link_id, spec in TOPO.SWITCH_LINKS.items():
             a, b = link_id.split("-")
+            # A link the congestion scenario is holding is not operational.
+            # Reporting it "up" here meant the safety validator's
+            # `all_links_operational` check could not see the bottleneck,
+            # because that check reads the *static* topology.
             links.append({"id": link_id, "source": a, "target": b,
                           "capacity_mbps": spec["capacity_mbps"],
                           "delay_ms": spec["delay_ms"],
-                          "status": "up", "congestible": spec["congestible"]})
+                          "status": "down" if link_id in congested else "up",
+                          "congestible": spec["congestible"]})
         # Host<->switch edges too. An end-to-end path spans them, so omitting
         # them makes every host-to-host path look like it references links the
         # topology does not contain -- which is exactly what the safety
@@ -681,6 +945,12 @@ def build_handler(lab: Lab, token: str):
                         params.get("src", "h1"), params.get("dst", "h4"))})
                 elif path == "/v1/health":
                     self._send(200, {"ok": True})
+                elif path == "/v1/port-stats":
+                    self._send(200, lab.port_stats_view())
+                elif path == "/v1/flows":
+                    self._send(200, lab.flow_table_view())
+                elif path == "/v1/overrides":
+                    self._send(200, lab.overrides_view())
                 elif path == "/v1/controller":
                     # Pass-through to the controller's own REST API. The lab
                     # netns is unreachable from the host, so this is the only
@@ -707,7 +977,20 @@ def build_handler(lab: Lab, token: str):
                     self._send(200, lab.start_congestion(
                         link_id=body.get("link_id", "s2-s4"),
                         rate_mbps=float(body.get("rate_mbps", 400)),
-                        duration_seconds=float(body.get("duration_seconds", 0))))
+                        duration_seconds=float(body.get("duration_seconds", 0)),
+                        report_degraded=bool(body.get("report_degraded", True))))
+                elif path == "/v1/scenarios/background_load":
+                    self._send(200, lab.start_background_load(
+                        src_host=body.get("src_host", "h2"),
+                        dst_host=body.get("dst_host", "h4"),
+                        rate_mbps=float(body.get("rate_mbps", 5.0)),
+                        duration_seconds=float(body.get("duration_seconds", 0.0))))
+                elif path == "/v1/scenarios/background_load/stop":
+                    self._send(200, lab.stop_background_load())
+                elif path == "/v1/scenarios/link_capacity":
+                    self._send(200, lab.set_link_capacity(
+                        link_id=body.get("link_id", "s2-s4"),
+                        capacity_mbps=float(body.get("capacity_mbps", 100.0))))
                 elif path == "/v1/scenarios/reset":
                     self._send(200, lab.reset())
                 elif path == "/v1/reroute":

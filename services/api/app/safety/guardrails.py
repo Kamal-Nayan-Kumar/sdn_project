@@ -78,8 +78,10 @@ _REQUEST_RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     (
         "safety_bypass",
         re.compile(
-            r"\b(disable|turn off|switch off|bypass|circumvent|skip)\b[^.\n]{0,40}"
-            r"\b(safety|guardrail|validator|validation|gate|approval|policy)\b",
+            r"\b(disable|turn off|switch off|bypass|circumvent|skip)\b"
+            r"[^.\n]{0,40}"
+            r"\b(safety|guardrail|validator|validation|gate|approval|policy|"
+            r"check|checks|constraint|constraints|protection)\b",
             re.IGNORECASE),
         "The request asks to disable a safety gate. Gates are enforced in "
         "Python and cannot be turned off by a message.",

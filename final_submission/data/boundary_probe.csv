@@ -1,0 +1,21 @@
+source,proposal,path,model_error,gate2_approved,failed_checks,crosses_degraded_link,strong_predicate_rejects
+model+telemetry,1,h1-s1-s3-s4-h4,,True,,False,False
+model+telemetry,2,h1-s1-s2-s3-s4-h4,,True,,False,False
+model+telemetry,3,h1-s1-s3-s4-h4,,True,,False,False
+model+telemetry,4,h1-s1-s3-s4-h4,,True,,False,False
+model+telemetry,5,h1-s1-s3-s4-h4,,True,,False,False
+model+telemetry,6,h1-s1-s3-s4-h4,,True,,False,False
+model+telemetry,7,h1-s1-s3-s4-h4,,True,,False,False
+model+telemetry,8,h1-s1-s2-s3-s4-h4,,True,,False,False
+model+topology-only,1,h1-s2-s3-s4-h4,,False,all_links_operational,False,False
+model+topology-only,2,h1-s1-s3-s4-h4,,True,,False,False
+model+topology-only,3,h1-s1-s2-s4-h4,,False,all_links_operational,True,True
+model+topology-only,4,h1-s1-s2-s4-h4,,False,all_links_operational,True,True
+model+topology-only,5,h1-s1-s2-s4-h4,,False,all_links_operational,True,True
+model+topology-only,6,h1-s2-s4-h4,,False,all_links_operational,True,True
+model+topology-only,7,h1-s1-s2-s4-h4,,False,all_links_operational,True,True
+model+topology-only,8,h1-s1-s2-s4-h4,,False,all_links_operational,True,True
+crafted:across the degraded link,17,h1-s1-s2-s4-h4,,False,all_links_operational,True,True
+crafted:destination not in the topology,18,h1-s1-s2-s9-h4,,False,path_well_formed;all_links_operational,False,False
+crafted:link that does not exist,19,h1-s1-s2-s9-s4-h4,,False,path_well_formed;all_links_operational,False,False
+crafted:action for another flow,20,h1-s1-s4-h3,,False,all_links_operational;flow_scope,False,False

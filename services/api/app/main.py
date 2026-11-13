@@ -132,7 +132,7 @@ def create_app() -> FastAPI:
                          else "sqlite"},
             "lab": lab_status,
             "llm": {"configured": settings.llm_configured,
-                    "model": settings.groq_model if settings.llm_configured
+                    "model": settings.llm_model_name if settings.llm_configured
                     else None},
             "safety": {
                 "require_human_approval_for_risky_actions":
